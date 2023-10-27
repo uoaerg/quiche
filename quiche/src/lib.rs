@@ -713,6 +713,9 @@ pub struct Config {
     hystart: bool,
 
     pacing: bool,
+
+    resume: bool,
+
     max_pacing_rate: Option<u64>,
 
     dgram_recv_max_queue_len: usize,
@@ -775,6 +778,7 @@ impl Config {
                 DEFAULT_INITIAL_CONGESTION_WINDOW_PACKETS,
             hystart: true,
             pacing: true,
+            resume: true,
             max_pacing_rate: None,
 
             dgram_recv_max_queue_len: DEFAULT_MAX_DGRAM_QUEUE_LEN,

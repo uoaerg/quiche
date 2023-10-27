@@ -153,6 +153,9 @@ pub struct Recovery {
     // RFC6937 PRR.
     prr: prr::PRR,
 
+    //Careful resume
+    resume: resume::Resume,
+
     #[cfg(feature = "qlog")]
     qlog_metrics: QlogMetrics,
 
@@ -179,6 +182,7 @@ pub struct RecoveryConfig {
     cc_ops: &'static CongestionControlOps,
     hystart: bool,
     pacing: bool,
+    resume: bool,
     max_pacing_rate: Option<u64>,
     initial_congestion_window_packets: usize,
 }
@@ -191,6 +195,7 @@ impl RecoveryConfig {
             cc_ops: config.cc_algorithm.into(),
             hystart: config.hystart,
             pacing: config.pacing,
+            resume: config.resume,
             max_pacing_rate: config.max_pacing_rate,
             initial_congestion_window_packets: config
                 .initial_congestion_window_packets,
@@ -287,6 +292,8 @@ impl Recovery {
 
             prr: prr::PRR::default(),
 
+            resume: resume::Resume::new(recovery_config.resume),
+
             send_quantum: initial_congestion_window,
 
             #[cfg(feature = "qlog")]
@@ -319,6 +326,7 @@ impl Recovery {
         self.ssthresh = usize::MAX;
         (self.cc_ops.reset)(self);
         self.hystart.reset();
+        self.resume.reset();
         self.prr = prr::PRR::default();
     }
 
@@ -364,6 +372,14 @@ impl Recovery {
             self.prr.on_packet_sent(sent_bytes);
 
             self.set_loss_detection_timer(handshake_status, now);
+        }
+
+        if self.resume.enabled() &&
+            epoch == packet::Epoch::Application &&
+            self.bytes_acked_sl > 0 {
+            //this increases the congestion window by jump window
+            // passes largest_sent_packt to resume, which sets its cr mark
+            self.congestion_window += self.resume.send_packet(self.bytes_in_flight, self.congestion_window, self.max_datagram_size, self.largest_sent_pkt[epoch]);
         }
 
         // HyStart++: Start of the round in a slow start.
@@ -455,7 +471,6 @@ impl Recovery {
             self.largest_acked_pkt[epoch] =
                 cmp::max(self.largest_acked_pkt[epoch], largest_acked);
         }
-
         let mut has_ack_eliciting = false;
 
         let mut largest_newly_acked_pkt_num = 0;
@@ -1234,6 +1249,9 @@ impl std::fmt::Debug for Recovery {
             write!(f, "hystart={:?} ", self.hystart)?;
         }
 
+        if self.resume.enabled() {
+            write!(f, "resume={:?} ", self.resume)?;
+        }
         // CC-specific debug info
         (self.cc_ops.debug_fmt)(self, f)?;
 
@@ -2269,6 +2287,7 @@ mod bbr2;
 mod cubic;
 mod delivery_rate;
 mod hystart;
+mod resume;
 mod pacer;
 mod prr;
 mod reno;
