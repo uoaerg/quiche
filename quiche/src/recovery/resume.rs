@@ -31,7 +31,7 @@ pub struct Resume {
 
     jump_window: usize,
 
-    cr_mark: u64,
+    pub cr_mark: u64,
 
     pipesize: usize,
 

@@ -744,11 +744,11 @@ pub struct MetricsUpdated {
     pub bytes_in_flight: Option<u64>,
 
     pub ssthresh: Option<u64>,
-
     // qlog defined
     pub packets_in_flight: Option<u64>,
 
     pub pacing_rate: Option<u64>,
+    pub cr_mark: Option<u64>,
 }
 
 #[serde_with::skip_serializing_none]

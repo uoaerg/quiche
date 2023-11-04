@@ -1118,6 +1118,7 @@ impl Recovery {
             bytes_in_flight: self.bytes_in_flight as u64,
             ssthresh: self.ssthresh as u64,
             pacing_rate: self.pacer.rate(),
+            cr_mark: self.resume.cr_mark
         };
 
         self.qlog_metrics.maybe_update(qlog_metrics)
@@ -1377,6 +1378,7 @@ struct QlogMetrics {
     bytes_in_flight: u64,
     ssthresh: u64,
     pacing_rate: u64,
+    cr_mark: u64,
 }
 
 #[cfg(feature = "qlog")]
@@ -1454,6 +1456,14 @@ impl QlogMetrics {
             None
         };
 
+        let new_cr_mark = if self.cr_mark != latest.cr_mark {
+            self.cr_mark = latest.cr_mark;
+            emit_event = true;
+            Some(latest.cr_mark)
+        } else {
+            None
+        };
+
         if emit_event {
             // QVis can't use all these fields and they can be large.
             return Some(EventData::MetricsUpdated(
@@ -1468,6 +1478,7 @@ impl QlogMetrics {
                     ssthresh: new_ssthresh,
                     packets_in_flight: None,
                     pacing_rate: new_pacing_rate,
+                    cr_mark: new_cr_mark,
                 },
             ));
         }
