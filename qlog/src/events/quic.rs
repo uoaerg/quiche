@@ -749,6 +749,8 @@ pub struct MetricsUpdated {
 
     pub pacing_rate: Option<u64>,
     pub cr_mark: Option<u64>,
+    pub cr_state: Option<u64>,
+
 }
 
 #[serde_with::skip_serializing_none]

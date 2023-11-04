@@ -102,7 +102,7 @@ impl Resume {
                 self.cr_mark = largest_pkt_sent;
                 // we return the difference between the jump window (in bytes) and current cwnd, CC code handles the increase in cwnd
                 // the reason we multiply by 1 less than the given jump window in packets is becuase the cwnd will also grow by at least the size of one packet
-                return (self.jump_window-1) * smss - cwnd;
+                return (self.jump_window-1) * smss;
             }
             (CrState::VALIDATE, true) => {
                 self.cr_state = CrState::NORMAL;
@@ -155,6 +155,17 @@ impl Resume {
             _ => {
                 false
             }
+        }
+    }
+
+    pub fn get_cr_state(&self) -> u64 {
+        match self.cr_state {
+            CrState::OBSERVE => { 0 }
+            CrState::RECON => { 1 }
+            CrState::UNVAL => { 2 }
+            CrState::VALIDATE => { 3 }
+            CrState::NORMAL => { 4 }
+            CrState::RETREAT => { 100 }
         }
     }
 
