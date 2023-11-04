@@ -45,6 +45,7 @@ pub struct CommonArgs {
     pub no_grease: bool,
     pub cc_algorithm: String,
     pub disable_hystart: bool,
+    pub disable_resume: bool,
     pub dgrams_enabled: bool,
     pub dgram_count: u64,
     pub dgram_data: String,
@@ -71,6 +72,7 @@ pub struct CommonArgs {
 /// --no-grease                 Don't send GREASE.
 /// --cc-algorithm NAME         Set a congestion control algorithm.
 /// --disable-hystart           Disable HyStart++.
+/// --disable-resume            Disable  Careful Resume.
 /// --dgram-proto PROTO         DATAGRAM application protocol.
 /// --dgram-count COUNT         Number of DATAGRAMs to send.
 /// --dgram-data DATA           DATAGRAM data to send.
@@ -147,6 +149,7 @@ impl Args for CommonArgs {
         let cc_algorithm = args.get_str("--cc-algorithm");
 
         let disable_hystart = args.get_bool("--disable-hystart");
+        let disable_resume = args.get_bool("--disable-resume");
 
         let max_active_cids = args.get_str("--max-active-cids");
         let max_active_cids = max_active_cids.parse::<u64>().unwrap();
@@ -205,6 +208,7 @@ impl Args for CommonArgs {
             no_grease,
             cc_algorithm: cc_algorithm.to_string(),
             disable_hystart,
+            disable_resume,
             dgrams_enabled,
             dgram_count,
             dgram_data,
@@ -234,6 +238,7 @@ impl Default for CommonArgs {
             no_grease: false,
             cc_algorithm: "cubic".to_string(),
             disable_hystart: false,
+            disable_resume: false,
             dgrams_enabled: false,
             dgram_count: 0,
             dgram_data: "quack".to_string(),
@@ -277,6 +282,7 @@ Options:
   --no-grease              Don't send GREASE.
   --cc-algorithm NAME      Specify which congestion control algorithm to use [default: cubic].
   --disable-hystart        Disable HyStart++.
+  --disable-resume        Disable Careful Resume.
   --max-active-cids NUM    The maximum number of active Connection IDs we can support [default: 2].
   --enable-active-migration   Enable active connection migration.
   --perform-migration      Perform connection migration on another source port.
@@ -456,6 +462,7 @@ Options:
   --dgram-data DATA           Data to send for certain types of DATAGRAM application protocol [default: brrr].
   --cc-algorithm NAME         Specify which congestion control algorithm to use [default: cubic].
   --disable-hystart           Disable HyStart++.
+  --disable-resume            Disable Careful Resume.
   --max-active-cids NUM       The maximum number of active Connection IDs we can support [default: 2].
   --enable-active-migration   Enable active connection migration.
   --max-field-section-size BYTES    Max size of uncompressed HTTP/3 field section. Default is unlimited.
