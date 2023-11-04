@@ -151,6 +151,7 @@ fn on_init(_r: &mut Recovery) {}
 
 fn reset(r: &mut Recovery) {
     r.cubic_state = State::default();
+
 }
 
 fn collapse_cwnd(r: &mut Recovery) {
@@ -170,6 +171,10 @@ fn collapse_cwnd(r: &mut Recovery) {
     cubic.cwnd_inc = 0;
 
     reno::collapse_cwnd(r);
+
+    if r.resume.enabled() {
+        r.resume.reset();
+    }
 }
 
 fn on_packet_sent(r: &mut Recovery, sent_bytes: usize, now: Instant) {
@@ -212,7 +217,6 @@ fn on_packet_acked(
     let in_congestion_recovery = r.in_congestion_recovery(packet.time_sent);
 
     r.bytes_in_flight = r.bytes_in_flight.saturating_sub(packet.size);
-
     if in_congestion_recovery {
         r.prr.on_packet_acked(
             packet.size,
@@ -248,6 +252,10 @@ fn on_packet_acked(
                 return;
             }
         }
+         if r.resume.in_retreat() {
+             r.congestion_window += r.resume.process_ack(r.latest_rtt, r.congestion_window, r.max_datagram_size, r.largest_sent_pkt[epoch], packet);
+         }
+
     }
 
     if r.congestion_window < r.ssthresh {
@@ -256,6 +264,9 @@ fn on_packet_acked(
         r.bytes_acked_sl += packet.size;
 
         if r.bytes_acked_sl >= r.max_datagram_size {
+            if r.resume.enabled() {
+            r.resume.process_ack(r.latest_rtt, r.congestion_window, r.max_datagram_size, r.largest_sent_pkt[epoch], packet);
+            }
             if r.hystart.in_css(epoch) {
                 r.congestion_window +=
                     r.hystart.css_cwnd_inc(r.max_datagram_size);
@@ -275,6 +286,7 @@ fn on_packet_acked(
         let ca_start_time;
 
         // In CSS, use css_start_time instead of congestion_recovery_start_time.
+
         if r.hystart.in_css(epoch) {
             ca_start_time = r.hystart.css_start_time().unwrap();
 
@@ -391,6 +403,13 @@ fn congestion_event(
         if r.hystart.in_css(epoch) {
             r.hystart.congestion_event();
         }
+
+        if r.resume.enabled() {
+            if r.resume.congestion_event(r.max_datagram_size, largest_lost_pkt.pkt_num) {
+                r.ssthresh = r.congestion_window/2;
+               // r.congestion_window = r.initial_congestion_window_packets; <- this is done by cubic above
+            }
+            }
 
         r.prr.congestion_event(r.bytes_in_flight);
     }
