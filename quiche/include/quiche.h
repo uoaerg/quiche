@@ -229,8 +229,7 @@ void quiche_config_set_cc_algorithm(quiche_config *config, enum quiche_cc_algori
 void quiche_config_enable_hystart(quiche_config *config, bool v);
 
 // Configures whether to use Careful Resume.
-void quiche_config_enable_cr(quiche_config *config, bool v);
-
+void quiche_config_enable_resume(quiche_config *config, bool v);
 
 // Configures whether to enable pacing (enabled by default).
 void quiche_config_enable_pacing(quiche_config *config, bool v);

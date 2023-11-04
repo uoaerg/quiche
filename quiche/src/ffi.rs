@@ -337,6 +337,10 @@ pub extern fn quiche_config_enable_hystart(config: &mut Config, v: bool) {
 }
 
 #[no_mangle]
+pub extern fn quiche_config_enable_resume(config: &mut Config, v: bool) {
+    config.enable_resume(v);
+}
+#[no_mangle]
 pub extern fn quiche_config_enable_pacing(config: &mut Config, v: bool) {
     config.enable_pacing(v);
 }

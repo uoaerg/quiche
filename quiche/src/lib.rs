@@ -1158,6 +1158,12 @@ impl Config {
         self.hystart = v;
     }
 
+    /// Configures whether to enable Careful Resume.
+    ///
+    /// The default value is `true`.
+    pub fn enable_resume(&mut self, v: bool) {
+        self.resume = v;
+    }
     /// Configures whether to enable pacing.
     ///
     /// The default value is `true`.

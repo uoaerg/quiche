@@ -160,6 +160,9 @@ fn main() {
         config.enable_hystart(false);
     }
 
+    if conn_args.disable_resume {
+        config.enable_resume(false);
+    }
     if conn_args.dgrams_enabled {
         config.enable_dgram(true, 1000, 1000);
     }
