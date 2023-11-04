@@ -100,9 +100,6 @@ impl Resume {
                 // move to validating
                 self.cr_state = CrState::VALIDATE;
                 self.cr_mark = largest_pkt_sent;
-                // we return the difference between the jump window (in bytes) and current cwnd, CC code handles the increase in cwnd
-                // the reason we multiply by 1 less than the given jump window in packets is becuase the cwnd will also grow by at least the size of one packet
-                return (self.jump_window-1) * smss;
             }
             (CrState::VALIDATE, true) => {
                 self.cr_state = CrState::NORMAL;
@@ -123,7 +120,6 @@ impl Resume {
             }
             return self.pipesize / 2;
         }
-
         //otherwise we return 0 aka we don't touch the cwnd
         return 0;
     }

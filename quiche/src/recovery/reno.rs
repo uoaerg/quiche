@@ -90,7 +90,7 @@ fn on_packet_acked(
         r.bytes_acked_sl += packet.size;
 
         if r.resume.enabled() {
-            r.congestion_window += r.resume.process_ack(r.latest_rtt, r.congestion_window, r.max_datagram_size, r.largest_sent_pkt[epoch], packet);
+            r.resume.process_ack(r.latest_rtt, r.congestion_window, r.max_datagram_size, r.largest_sent_pkt[epoch], packet);
             }
 
         if r.hystart.in_css(epoch) {
