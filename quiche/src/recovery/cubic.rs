@@ -253,7 +253,7 @@ fn on_packet_acked(
             }
         }
          if r.resume.in_retreat() {
-             r.congestion_window += r.resume.process_ack(r.latest_rtt, r.congestion_window, r.max_datagram_size, r.largest_sent_pkt[epoch], packet);
+             r.congestion_window += r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
          }
 
     }
@@ -265,7 +265,7 @@ fn on_packet_acked(
 
         if r.bytes_acked_sl >= r.max_datagram_size {
             if r.resume.enabled() {
-            r.resume.process_ack(r.latest_rtt, r.congestion_window, r.max_datagram_size, r.largest_sent_pkt[epoch], packet);
+            r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
             }
             if r.hystart.in_css(epoch) {
                 r.congestion_window +=
@@ -405,7 +405,7 @@ fn congestion_event(
         }
 
         if r.resume.enabled() {
-            if r.resume.congestion_event(r.max_datagram_size, largest_lost_pkt.pkt_num) {
+            if r.resume.congestion_event(largest_lost_pkt.pkt_num) {
                 r.ssthresh = r.congestion_window/2;
                // r.congestion_window = r.initial_congestion_window_packets; <- this is done by cubic above
             }

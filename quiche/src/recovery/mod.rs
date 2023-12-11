@@ -379,7 +379,7 @@ impl Recovery {
             self.bytes_acked_sl > 0 {
             //this increases the congestion window by jump window
             // passes largest_sent_packt to resume, which sets its cr mark
-            self.congestion_window += self.resume.send_packet(self.bytes_in_flight, self.congestion_window, self.max_datagram_size, self.largest_sent_pkt[epoch]);
+            self.congestion_window += self.resume.send_packet(self.latest_rtt, self.bytes_in_flight, self.congestion_window, self.max_datagram_size, self.largest_sent_pkt[epoch]);
         }
 
         // HyStart++: Start of the round in a slow start.

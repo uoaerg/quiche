@@ -76,8 +76,11 @@ fn on_packet_acked(
 
     if r.in_congestion_recovery(packet.time_sent) {
          if r.resume.in_retreat() {
-             r.congestion_window += r.resume.process_ack(r.latest_rtt, r.congestion_window, r.max_datagram_size, r.largest_sent_pkt[epoch], packet);
-         }
+             let pipe = r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
+             if pipe > 0 {
+                 r.ssthresh = pipe;
+             }
+          }
         return;
     }
 
@@ -90,8 +93,11 @@ fn on_packet_acked(
         r.bytes_acked_sl += packet.size;
 
         if r.resume.enabled() {
-            r.resume.process_ack(r.latest_rtt, r.congestion_window, r.max_datagram_size, r.largest_sent_pkt[epoch], packet);
+           let win = r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
+            if win > 0 {
+                r.congestion_window = win;
             }
+          }
 
         if r.hystart.in_css(epoch) {
             r.congestion_window += r.hystart.css_cwnd_inc(r.max_datagram_size);
@@ -144,9 +150,8 @@ fn congestion_event(
             r.hystart.congestion_event();
         }
         if r.resume.enabled() {
-            if r.resume.congestion_event(r.max_datagram_size, largest_lost_pkt.pkt_num) {
-                r.ssthresh = r.congestion_window/2;
-               // r.congestion_window = r.initial_congestion_window_packets; <- this is done by reno above
+            if r.resume.congestion_event(largest_lost_pkt.pkt_num) {
+                r.congestion_window = r.resume.pipesize/2;
             }
 
         }
