@@ -75,17 +75,29 @@ fn on_packet_acked(
     r.bytes_in_flight = r.bytes_in_flight.saturating_sub(packet.size);
 
     if r.in_congestion_recovery(packet.time_sent) {
+         if r.resume.in_retreat() {
+             let pipe = r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
+             if pipe > 0 {
+                 r.ssthresh = pipe;
+             }
+          }
         return;
     }
 
     if r.app_limited {
         return;
     }
-
     if r.congestion_window < r.ssthresh {
         // In Slow slart, bytes_acked_sl is used for counting
         // acknowledged bytes.
         r.bytes_acked_sl += packet.size;
+
+        if r.resume.enabled() {
+           let win = r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
+            if win > 0 {
+                r.congestion_window = win;
+            }
+          }
 
         if r.hystart.in_css(epoch) {
             r.congestion_window += r.hystart.css_cwnd_inc(r.max_datagram_size);
@@ -97,6 +109,7 @@ fn on_packet_acked(
             // Exit to congestion avoidance if CSS ends.
             r.ssthresh = r.congestion_window;
         }
+
     } else {
         // Congestion avoidance.
         r.bytes_acked_ca += packet.size;
@@ -136,6 +149,12 @@ fn congestion_event(
         if r.hystart.in_css(epoch) {
             r.hystart.congestion_event();
         }
+        if r.resume.enabled() {
+            if r.resume.congestion_event(largest_lost_pkt.pkt_num) {
+                r.congestion_window = r.resume.pipesize/2;
+            }
+
+        }
     }
 }
 
@@ -147,6 +166,10 @@ pub fn collapse_cwnd(r: &mut Recovery) {
     if r.hystart.enabled() {
         r.hystart.reset();
     }
+    if r.resume.enabled() {
+        r.resume.reset();
+    }
+
 }
 
 fn checkpoint(_r: &mut Recovery) {}
