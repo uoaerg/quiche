@@ -53,49 +53,71 @@ const INTERNAL_ERROR: u64 = 0x01;
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct SSL_METHOD(c_void);
+struct SSL_METHOD {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct SSL_CTX(c_void);
+struct SSL_CTX {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct SSL(c_void);
+struct SSL {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct SSL_CIPHER(c_void);
+struct SSL_CIPHER {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct SSL_SESSION(c_void);
+struct SSL_SESSION {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct X509_VERIFY_PARAM(c_void);
+struct X509_VERIFY_PARAM {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
 #[cfg(windows)]
-struct X509_STORE(c_void);
+struct X509_STORE {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct X509_STORE_CTX(c_void);
+struct X509_STORE_CTX {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
 #[cfg(windows)]
-struct X509(c_void);
+struct X509 {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct STACK_OF(c_void);
+struct STACK_OF {
+    _unused: c_void,
+}
 
 #[allow(non_camel_case_types)]
 #[repr(transparent)]
-struct CRYPTO_BUFFER(c_void);
+struct CRYPTO_BUFFER {
+    _unused: c_void,
+}
 
 #[repr(C)]
 #[allow(non_camel_case_types)]
@@ -898,6 +920,13 @@ impl Handshake {
             }
         }
     }
+
+    #[cfg(feature = "boringssl-boring-crate")]
+    pub(crate) fn ssl_mut(&mut self) -> &mut boring::ssl::SslRef {
+        use foreign_types_shared::ForeignTypeRef;
+
+        unsafe { boring::ssl::SslRef::from_ptr_mut(self.as_mut_ptr() as _) }
+    }
 }
 
 // NOTE: These traits are not automatically implemented for Handshake due to the
@@ -984,7 +1013,7 @@ extern fn set_read_secret(
     if level != crypto::Level::ZeroRTT || ex_data.is_server {
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
 
-        let open = match crypto::Open::from_secret(aead, secret) {
+        let open = match crypto::Open::from_secret(aead, secret.to_vec()) {
             Ok(v) => v,
 
             Err(_) => return 0,
@@ -1035,7 +1064,7 @@ extern fn set_write_secret(
     if level != crypto::Level::ZeroRTT || !ex_data.is_server {
         let secret = unsafe { slice::from_raw_parts(secret, secret_len) };
 
-        let seal = match crypto::Seal::from_secret(aead, secret) {
+        let seal = match crypto::Seal::from_secret(aead, secret.to_vec()) {
             Ok(v) => v,
 
             Err(_) => return 0,

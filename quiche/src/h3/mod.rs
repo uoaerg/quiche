@@ -2716,7 +2716,7 @@ impl Connection {
 }
 
 /// Generates an HTTP/3 GREASE variable length integer.
-fn grease_value() -> u64 {
+pub fn grease_value() -> u64 {
     let n = super::rand::rand_u64_uniform(148_764_065_110_560_899);
     31 * n + 33
 }
@@ -6277,6 +6277,10 @@ mod tests {
 
 #[cfg(feature = "ffi")]
 mod ffi;
+#[cfg(feature = "internal")]
+#[doc(hidden)]
+pub mod frame;
+#[cfg(not(feature = "internal"))]
 mod frame;
 #[doc(hidden)]
 pub mod qpack;

@@ -58,9 +58,7 @@ fn main() {
     let mut out = [0; MAX_BUF_SIZE];
     let mut pacing = false;
 
-    env_logger::builder()
-        .default_format_timestamp_nanos(true)
-        .init();
+    env_logger::builder().format_timestamp_nanos().init();
 
     // Parse CLI parameters.
     let docopt = docopt::Docopt::new(SERVER_USAGE).unwrap();
@@ -512,13 +510,9 @@ fn main() {
             }
 
             // Provides as many CIDs as possible.
-            while client.conn.source_cids_left() > 0 {
+            while client.conn.scids_left() > 0 {
                 let (scid, reset_token) = generate_cid_and_reset_token(&rng);
-                if client
-                    .conn
-                    .new_source_cid(&scid, reset_token, false)
-                    .is_err()
-                {
+                if client.conn.new_scid(&scid, reset_token, false).is_err() {
                     break;
                 }
 

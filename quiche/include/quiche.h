@@ -251,6 +251,12 @@ void quiche_config_set_active_connection_id_limit(quiche_config *config, uint64_
 // Sets the initial stateless reset token. |v| must contain 16 bytes, otherwise the behaviour is undefined.
 void quiche_config_set_stateless_reset_token(quiche_config *config, const uint8_t *v);
 
+// Sets whether the QUIC connection should avoid reusing DCIDs over different paths.
+void quiche_config_set_disable_dcid_reuse(quiche_config *config, bool v);
+
+// Configures the session ticket key material.
+int quiche_config_set_ticket_key(quiche_config *config, const uint8_t *key, size_t key_len);
+
 // Frees the config object.
 void quiche_config_free(quiche_config *config);
 
@@ -268,15 +274,15 @@ typedef struct quiche_conn quiche_conn;
 // Creates a new server-side connection.
 quiche_conn *quiche_accept(const uint8_t *scid, size_t scid_len,
                            const uint8_t *odcid, size_t odcid_len,
-                           const struct sockaddr *local, size_t local_len,
-                           const struct sockaddr *peer, size_t peer_len,
+                           const struct sockaddr *local, socklen_t local_len,
+                           const struct sockaddr *peer, socklen_t peer_len,
                            quiche_config *config);
 
 // Creates a new client-side connection.
 quiche_conn *quiche_connect(const char *server_name,
                             const uint8_t *scid, size_t scid_len,
-                            const struct sockaddr *local, size_t local_len,
-                            const struct sockaddr *peer, size_t peer_len,
+                            const struct sockaddr *local, socklen_t local_len,
+                            const struct sockaddr *peer, socklen_t peer_len,
                             quiche_config *config);
 
 // Writes a version negotiation packet.
@@ -296,8 +302,8 @@ bool quiche_version_is_supported(uint32_t version);
 
 quiche_conn *quiche_conn_new_with_tls(const uint8_t *scid, size_t scid_len,
                                       const uint8_t *odcid, size_t odcid_len,
-                                      const struct sockaddr *local, size_t local_len,
-                                      const struct sockaddr *peer, size_t peer_len,
+                                      const struct sockaddr *local, socklen_t local_len,
+                                      const struct sockaddr *peer, socklen_t peer_len,
                                       const quiche_config *config, void *ssl,
                                       bool is_server);
 
@@ -351,6 +357,19 @@ ssize_t quiche_conn_send(quiche_conn *conn, uint8_t *out, size_t out_len,
 
 // Returns the size of the send quantum, in bytes.
 size_t quiche_conn_send_quantum(const quiche_conn *conn);
+
+// Writes a single QUIC packet to be sent to the peer from the specified
+// local address "from" to the destination address "to".
+ssize_t quiche_conn_send_on_path(quiche_conn *conn, uint8_t *out, size_t out_len,
+                                 const struct sockaddr *from, socklen_t from_len,
+                                 const struct sockaddr *to, socklen_t to_len,
+                                 quiche_send_info *out_info);
+
+// Returns the size of the send quantum over the given 4-tuple, in bytes.
+size_t quiche_conn_send_quantum_on_path(const quiche_conn *conn,
+                                        const struct sockaddr *local_addr, socklen_t local_len,
+                                        const struct sockaddr *peer_addr, socklen_t peer_len);
+
 
 // Reads contiguous data from a stream.
 ssize_t quiche_conn_stream_recv(quiche_conn *conn, uint64_t stream_id,
@@ -426,6 +445,18 @@ void quiche_conn_trace_id(const quiche_conn *conn, const uint8_t **out, size_t *
 // Returns the source connection ID.
 void quiche_conn_source_id(const quiche_conn *conn, const uint8_t **out, size_t *out_len);
 
+typedef struct quiche_connection_id_iter quiche_connection_id_iter;
+
+// Returns all active source connection IDs.
+quiche_connection_id_iter *quiche_conn_source_ids(quiche_conn *conn);
+
+// Fetches the next id from the given iterator. Returns false if there are
+// no more elements in the iterator.
+bool quiche_connection_id_iter_next(quiche_connection_id_iter *iter,  const uint8_t **out, size_t *out_len);
+
+// Frees the given path iterator object.
+void quiche_connection_id_iter_free(quiche_connection_id_iter *iter);
+
 // Returns the destination connection ID.
 void quiche_conn_destination_id(const quiche_conn *conn, const uint8_t **out, size_t *out_len);
 
@@ -441,6 +472,9 @@ void quiche_conn_session(const quiche_conn *conn, const uint8_t **out, size_t *o
 
 // Returns true if the connection handshake is complete.
 bool quiche_conn_is_established(const quiche_conn *conn);
+
+// Returns true if the connection is resumed.
+bool quiche_conn_is_resumed(const quiche_conn *conn);
 
 // Returns true if the connection has a pending handshake that has progressed
 // enough to send or receive early data.
@@ -670,13 +704,127 @@ ssize_t quiche_conn_dgram_send(quiche_conn *conn, const uint8_t *buf,
 void quiche_conn_dgram_purge_outgoing(quiche_conn *conn,
                                       bool (*f)(uint8_t *, size_t));
 
+// Returns whether or not the DATAGRAM send queue is full.
+bool quiche_conn_is_dgram_send_queue_full(const quiche_conn *conn);
+
+// Returns whether or not the DATAGRAM recv queue is full.
+bool quiche_conn_is_dgram_recv_queue_full(const quiche_conn *conn);
+
 // Schedule an ack-eliciting packet on the active path.
 ssize_t quiche_conn_send_ack_eliciting(quiche_conn *conn);
 
 // Schedule an ack-eliciting packet on the specified path.
 ssize_t quiche_conn_send_ack_eliciting_on_path(quiche_conn *conn,
-                           const struct sockaddr *local, size_t local_len,
-                           const struct sockaddr *peer, size_t peer_len);
+                           const struct sockaddr *local, socklen_t local_len,
+                           const struct sockaddr *peer, socklen_t peer_len);
+
+// Returns true if there are retired source connection ids and fill the parameters
+bool quiche_conn_retired_scid_next(const quiche_conn *conn, const uint8_t **out, size_t *out_len);
+
+// Returns the number of source Connection IDs that are retired.
+size_t quiche_conn_retired_scids(const quiche_conn *conn);
+
+// Returns the number of spare Destination Connection IDs, i.e.,
+// Destination Connection IDs that are still unused.
+size_t quiche_conn_available_dcids(const quiche_conn *conn);
+
+// Returns the number of source Connection IDs that should be provided
+// to the peer without exceeding the limit it advertised.
+size_t quiche_conn_scids_left(quiche_conn *conn);
+
+// Returns the number of source Connection IDs that are active. This is
+// only meaningful if the host uses non-zero length Source Connection IDs.
+size_t quiche_conn_active_scids(quiche_conn *conn);
+
+// Provides additional source Connection IDs that the peer can use to reach
+// this host. Writes the sequence number to "scid_seq" and returns 0.
+int quiche_conn_new_scid(quiche_conn *conn,
+                           const uint8_t *scid, size_t scid_len,
+                           const uint8_t *reset_token, bool retire_if_needed, uint64_t *scid_seq);
+
+// Requests the stack to perform path validation of the proposed 4-tuple.
+int quiche_conn_probe_path(quiche_conn *conn,
+                                const struct sockaddr *local, socklen_t local_len,
+                                const struct sockaddr *peer, socklen_t peer_len, uint64_t *seq);
+
+// Migrates the connection to a new local address.
+int quiche_conn_migrate_source(quiche_conn *conn, const struct sockaddr *local, socklen_t local_len, uint64_t *seq);
+
+// Migrates the connection over the given network path between "local"
+// and "peer".
+int quiche_conn_migrate(quiche_conn *conn,
+                             const struct sockaddr *local, socklen_t local_len,
+                             const struct sockaddr *peer, socklen_t peer_len,
+                             uint64_t *seq);
+
+enum quiche_path_event_type {
+    QUICHE_PATH_EVENT_NEW,
+    QUICHE_PATH_EVENT_VALIDATED,
+    QUICHE_PATH_EVENT_FAILED_VALIDATION,
+    QUICHE_PATH_EVENT_CLOSED,
+    QUICHE_PATH_EVENT_REUSED_SOURCE_CONNECTION_ID,
+    QUICHE_PATH_EVENT_PEER_MIGRATED,
+};
+
+typedef struct quiche_path_event quiche_path_event;
+
+// Retrieves the next event. Returns NULL if there is no event to process.
+const quiche_path_event *quiche_conn_path_event_next(quiche_conn *conn);
+
+// Returns the type of the event.
+enum quiche_path_event_type quiche_path_event_type(quiche_path_event *ev);
+
+// Should be called if the quiche_path_event_type(...) returns QUICHE_PATH_EVENT_NEW.
+void quiche_path_event_new(quiche_path_event *ev,
+                           struct sockaddr_storage *local, socklen_t *local_len, struct sockaddr_storage *peer, socklen_t *peer_len);
+
+// Should be called if the quiche_path_event_type(...) returns QUICHE_PATH_EVENT_VALIDATED.
+void quiche_path_event_validated(quiche_path_event *ev,
+                           struct sockaddr_storage *local, socklen_t *local_len, struct sockaddr_storage *peer, socklen_t *peer_len);
+
+// Should be called if the quiche_path_event_type(...) returns QUICHE_PATH_EVENT_FAILED_VALIDATION.
+void quiche_path_event_failed_validation(quiche_path_event *ev,
+                           struct sockaddr_storage *local, socklen_t *local_len, struct sockaddr_storage *peer, socklen_t *peer_len);
+
+// Should be called if the quiche_path_event_type(...) returns QUICHE_PATH_EVENT_CLOSED.
+void quiche_path_event_closed(quiche_path_event *ev,
+                           struct sockaddr_storage *local, socklen_t *local_len, struct sockaddr_storage *peer, socklen_t *peer_len);
+
+// Should be called if the quiche_path_event_type(...) returns QUICHE_PATH_EVENT_REUSED_SOURCE_CONNECTION_ID.
+void quiche_path_event_reused_source_connection_id(quiche_path_event *ev, uint64_t *id,
+                           struct sockaddr_storage *old_local, socklen_t *old_local_len,
+                           struct sockaddr_storage *old_peer, socklen_t *old_peer_len,
+                           struct sockaddr_storage *local, socklen_t *local_len,
+                           struct sockaddr_storage *peer, socklen_t *peer_len);
+
+// Should be called if the quiche_path_event_type(...) returns QUICHE_PATH_EVENT_PEER_MIGRATED.
+void quiche_path_event_peer_migrated(quiche_path_event *ev,
+                           struct sockaddr_storage *local, socklen_t *local_len,
+                           struct sockaddr_storage *peer, socklen_t *peer_len);
+
+// Frees the path event object.
+void quiche_path_event_free(quiche_path_event *ev);
+
+// Requests the retirement of the destination Connection ID used by the
+// host to reach its peer.
+int quiche_conn_retire_dcid(quiche_conn *conn, uint64_t dcid_seq);
+
+typedef struct quiche_socket_addr_iter quiche_socket_addr_iter;
+
+// Returns an iterator over destination `SockAddr`s whose association
+// with "from" forms a known QUIC path on which packets can be sent to.
+quiche_socket_addr_iter *quiche_conn_paths_iter(quiche_conn *conn, const struct sockaddr *from, size_t from_len);
+
+// Fetches the next peer from the given iterator. Returns false if there are
+// no more elements in the iterator.
+bool quiche_socket_addr_iter_next(quiche_socket_addr_iter *iter, struct sockaddr_storage *peer, size_t *peer_len);
+
+// Frees the given path iterator object.
+void quiche_socket_addr_iter_free(quiche_socket_addr_iter *iter);
+
+// Returns whether the network path with local address "from and remote address "to" has been validated.
+// If the 4-tuple does not exist over the connection, returns an InvalidState.
+int quiche_conn_is_path_validated(const quiche_conn *conn, const struct sockaddr *from, size_t from_len, const struct sockaddr *to, size_t to_len);
 
 // Frees the connection object.
 void quiche_conn_free(quiche_conn *conn);
@@ -919,23 +1067,23 @@ typedef struct {
 
 // Sends an HTTP/3 request.
 int64_t quiche_h3_send_request(quiche_h3_conn *conn, quiche_conn *quic_conn,
-                               quiche_h3_header *headers, size_t headers_len,
+                               const quiche_h3_header *headers, size_t headers_len,
                                bool fin);
 
 // Sends an HTTP/3 response on the specified stream with default priority.
 int quiche_h3_send_response(quiche_h3_conn *conn, quiche_conn *quic_conn,
-                            uint64_t stream_id, quiche_h3_header *headers,
+                            uint64_t stream_id, const quiche_h3_header *headers,
                             size_t headers_len, bool fin);
 
 // Sends an HTTP/3 response on the specified stream with specified priority.
 int quiche_h3_send_response_with_priority(quiche_h3_conn *conn,
                             quiche_conn *quic_conn, uint64_t stream_id,
-                            quiche_h3_header *headers, size_t headers_len,
+                            const quiche_h3_header *headers, size_t headers_len,
                             quiche_h3_priority *priority, bool fin);
 
 // Sends an HTTP/3 body chunk on the given stream.
 ssize_t quiche_h3_send_body(quiche_h3_conn *conn, quiche_conn *quic_conn,
-                            uint64_t stream_id, uint8_t *body, size_t body_len,
+                            uint64_t stream_id, const uint8_t *body, size_t body_len,
                             bool fin);
 
 // Reads request or response body data into the provided buffer.
