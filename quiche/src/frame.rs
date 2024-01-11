@@ -1048,8 +1048,8 @@ impl std::fmt::Debug for Frame {
                 write!(f, "CRYPTO off={offset} len={length}")?;
             },
 
-            Frame::NewToken { .. } => {
-                write!(f, "NEW_TOKEN (TODO)")?;
+            Frame::NewToken { token } => {
+                write!(f, "NEW_TOKEN token={token:02x?}")?;
             },
 
             Frame::Stream { stream_id, data } => {

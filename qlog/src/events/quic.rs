@@ -558,6 +558,8 @@ pub struct TransportParametersSet {
     pub initial_max_streams_uni: Option<u64>,
 
     pub preferred_address: Option<PreferredAddress>,
+
+    pub bdp_tokens: Option<bool>,
 }
 
 #[serde_with::skip_serializing_none]

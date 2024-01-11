@@ -1231,6 +1231,13 @@ impl Config {
     pub fn set_disable_dcid_reuse(&mut self, v: bool) {
         self.disable_dcid_reuse = v;
     }
+
+    /// Configures advertising that the server is sending BDP tokens in its NEW_TOKEN frames
+    ///
+    /// The default value is `false`.
+    pub fn set_bdp_tokens(&mut self, v: bool) {
+        self.local_transport_params.bdp_tokens = v;
+    }
 }
 
 /// A QUIC connection.
@@ -1331,8 +1338,17 @@ pub struct Connection {
     /// retry to validate the server's transport parameter.
     rscid: Option<ConnectionId<'static>>,
 
-    /// Received address verification token.
+    /// Address verification token to send in the INITIAL packet
     token: Option<Vec<u8>>,
+
+    /// Address verification token to send in next packet in a NEW_TOKEN frame
+    new_token: Option<Vec<u8>>,
+
+    /// Received address verification token from the INITIAL packet.
+    peer_token: Option<Vec<u8>>,
+
+    /// Queue of tokens received in NEW_TOKEN frames
+    received_tokens: VecDeque<Vec<u8>>,
 
     /// Error code and reason to be sent to the peer in a CONNECTION_CLOSE
     /// frame.
@@ -1806,6 +1822,9 @@ impl Connection {
             rscid: None,
 
             token: None,
+            new_token: None,
+            peer_token: None,
+            received_tokens: VecDeque::new(),
 
             local_error: None,
 
@@ -2055,6 +2074,36 @@ impl Connection {
         self.process_peer_transport_params(peer_params)?;
 
         Ok(())
+    }
+
+    /// Configures the token for the Initial packet
+    ///
+    /// This must only be called immediately after creating a connection; that
+    /// is, before any packet is sent or received.
+    #[inline]
+    pub fn set_token(&mut self, token: &[u8]) -> () {
+        self.token.replace(token.to_vec());
+    }
+
+    /// Sends an address validation token in a NEW_TOKEN frame
+    #[inline]
+    pub fn send_new_token(&mut self, token: &[u8]) -> () {
+        if self.is_closed() || self.is_draining() {
+            return ();
+        }
+        self.new_token.replace(token.to_vec());
+    }
+
+    /// The token received from the peer in the INITIAL packet
+    #[inline]
+    pub fn peer_token(&mut self) -> Option<&[u8]> {
+        self.peer_token.as_deref()
+    }
+
+    /// Fetch the next received token in the queue
+    #[inline]
+    pub fn recv_new_token(&mut self) -> Option<Vec<u8>> {
+        self.received_tokens.pop_front()
     }
 
     /// Processes QUIC packets received from the peer.
@@ -2551,6 +2600,12 @@ impl Connection {
             pn,
             AddrTupleFmt(info.from, info.to)
         );
+
+        if hdr.ty == Type::Initial {
+            if let Some(token) = &hdr.token {
+                self.peer_token.replace(token.clone());
+            }
+        }
 
         #[cfg(feature = "qlog")]
         let mut qlog_frames = vec![];
@@ -3829,6 +3884,18 @@ impl Connection {
                     in_flight = true;
                 } else {
                     break;
+                }
+            }
+
+            // Create NEW_TOKEN frame.
+            if let Some(token) = &self.new_token {
+                let frame = frame::Frame::NewToken { token: token.clone() };
+
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    self.new_token = None;
+
+                    ack_eliciting = true;
+                    in_flight = true;
                 }
             }
         }
@@ -6795,8 +6862,9 @@ impl Connection {
 
             frame::Frame::CryptoHeader { .. } => unreachable!(),
 
-            // TODO: implement stateless retry
-            frame::Frame::NewToken { .. } => (),
+            frame::Frame::NewToken { token } => {
+                self.received_tokens.push_back(token);
+            },
 
             frame::Frame::Stream { stream_id, data } => {
                 // Peer can't send on our unidirectional streams.
@@ -7593,6 +7661,8 @@ pub struct TransportParams {
     /// DATAGRAM frame extension parameter, if any.
     pub max_datagram_frame_size: Option<u64>,
     // pub preferred_address: ...,
+    /// Address validation tokens contain BDP data
+    pub bdp_tokens: bool,
 }
 
 impl Default for TransportParams {
@@ -7615,6 +7685,7 @@ impl Default for TransportParams {
             initial_source_connection_id: None,
             retry_source_connection_id: None,
             max_datagram_frame_size: None,
+            bdp_tokens: false,
         }
     }
 }
@@ -7764,6 +7835,20 @@ impl TransportParams {
                 0x0020 => {
                     tp.max_datagram_frame_size = Some(val.get_varint()?);
                 },
+
+                0x1312 => {
+                    let bdp_tokens = val.get_varint()?;
+
+                    if bdp_tokens > 1 {
+                        return Err(Error::InvalidTransportParam);
+                    }
+
+                    tp.bdp_tokens = if bdp_tokens == 0 {
+                        false
+                    } else {
+                        true
+                    };
+                }
 
                 // Ignore unknown parameters.
                 _ => (),
@@ -7927,6 +8012,15 @@ impl TransportParams {
             b.put_varint(max_datagram_frame_size)?;
         }
 
+        if tp.bdp_tokens {
+            TransportParams::encode_param(
+                &mut b,
+                0x1312,
+                octets::varint_len(1),
+            )?;
+            b.put_varint(1)?;
+        }
+
         let out_len = b.off();
 
         Ok(&mut out[..out_len])
@@ -7979,6 +8073,8 @@ impl TransportParams {
                 initial_max_streams_uni: Some(self.initial_max_streams_uni),
 
                 preferred_address: None,
+
+                bdp_tokens: Some(self.bdp_tokens),
             },
         )
     }
