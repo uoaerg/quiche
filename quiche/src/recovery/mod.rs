@@ -185,7 +185,6 @@ pub struct RecoveryConfig {
     cc_ops: &'static CongestionControlOps,
     hystart: bool,
     pacing: bool,
-    resume: bool,
     max_pacing_rate: Option<u64>,
     initial_congestion_window_packets: usize,
 }
@@ -198,7 +197,6 @@ impl RecoveryConfig {
             cc_ops: config.cc_algorithm.into(),
             hystart: config.hystart,
             pacing: config.pacing,
-            resume: config.resume,
             max_pacing_rate: config.max_pacing_rate,
             initial_congestion_window_packets: config
                 .initial_congestion_window_packets,
@@ -295,7 +293,7 @@ impl Recovery {
 
             prr: prr::PRR::default(),
 
-            resume: resume::Resume::new(recovery_config.resume),
+            resume: resume::Resume::new(trace_id),
             cr_metrics: resume::CRMetrics::new(trace_id, initial_congestion_window),
 
             send_quantum: initial_congestion_window,
@@ -378,12 +376,11 @@ impl Recovery {
             self.set_loss_detection_timer(handshake_status, now);
         }
 
-        if self.resume.enabled() &&
-            epoch == packet::Epoch::Application &&
-            self.bytes_acked_sl > 0 {
-            //this increases the congestion window by jump window
-            // passes largest_sent_packt to resume, which sets its cr mark
-            self.congestion_window += self.resume.send_packet(self.latest_rtt, self.bytes_in_flight, self.congestion_window, self.max_datagram_size, self.largest_sent_pkt[epoch]);
+        if self.resume.enabled() && epoch == packet::Epoch::Application {
+            // Increase the congestion window by a jump determined by careful resume
+            self.congestion_window += self.resume.send_packet(
+                self.latest_rtt, self.congestion_window, self.largest_sent_pkt[epoch], self.app_limited
+            );
         }
 
         // HyStart++: Start of the round in a slow start.
@@ -618,6 +615,20 @@ impl Recovery {
             self.detect_lost_packets(epoch, now, trace_id);
 
         self.on_packets_acked(newly_acked, epoch, now);
+
+        if self.resume.enabled() {
+            for packet in newly_acked {
+                let (new_cwnd, new_ssthresh) = self.resume.process_ack(
+                    self.largest_sent_pkt[epoch], packet, self.bytes_in_flight
+                );
+                if let Some(new_cwnd) = new_cwnd {
+                    self.congestion_window = new_cwnd;
+                }
+                if let Some(new_ssthresh) = new_ssthresh {
+                    self.ssthresh = new_ssthresh;
+                }
+            }
+        }
 
         self.pto_count = 0;
 
@@ -1033,7 +1044,7 @@ impl Recovery {
     }
 
     fn on_packets_acked(
-        &mut self, acked: &mut Vec<Acked>, epoch: packet::Epoch, now: Instant,
+        &mut self, acked: &Vec<Acked>, epoch: packet::Epoch, now: Instant,
     ) {
         // Update delivery rate sample per acked packet.
         for pkt in acked.iter() {
@@ -1093,6 +1104,13 @@ impl Recovery {
             epoch,
             now,
         );
+
+        if self.resume.enabled() {
+            let new_cwnd = self.resume.congestion_event(self.largest_sent_pkt[epoch]);
+            if new_cwnd != 0 {
+                self.congestion_window = std::cmp::max(new_cwnd, self.congestion_window);
+            }
+        }
     }
 
     fn collapse_cwnd(&mut self) {
@@ -1126,7 +1144,7 @@ impl Recovery {
             bytes_in_flight: self.bytes_in_flight as u64,
             ssthresh: self.ssthresh as u64,
             pacing_rate: self.pacer.rate(),
-            cr_mark: self.resume.cr_mark,
+            cr_mark: self.resume.get_cr_mark(),
             cr_state: self.resume.get_cr_state(),
         };
 
@@ -1135,6 +1153,10 @@ impl Recovery {
 
     pub fn send_quantum(&self) -> usize {
         self.send_quantum
+    }
+
+    pub fn setup_careful_resume(&mut self, previous_rtt: Duration, previous_cwnd: usize) {
+        self.resume.setup(previous_rtt, previous_cwnd);
     }
 }
 
@@ -1182,7 +1204,7 @@ pub struct CongestionControlOps {
 
     pub on_packets_acked: fn(
         r: &mut Recovery,
-        packets: &mut Vec<Acked>,
+        packets: &[Acked],
         epoch: packet::Epoch,
         now: Instant,
     ),

@@ -1,192 +1,187 @@
-
 use std::time::{Duration, Instant};
 use crate::recovery::Acked;
 
-
-// to be initialised from environment variables later
-const PREVIOUS_RTT: Duration = Duration::from_millis(600);
-const JUMP_WINDOW: usize = 2000;
-
 const CR_EVENT_MAXIMUM_GAP: Duration = Duration::from_secs(60);
 
-#[derive(Debug)]
+// No observe state as that always applies to the previous connection and never the current connection
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CrState {
-    OBSERVE,
-    RECON,
-    UNVAL,
-    VALIDATE,
-    RETREAT,
-    NORMAL,
+    Reconnaissance,
+    // The next two states store the first packet sent when entering that state
+    Unvalidated(u64),
+    Validating(u64),
+    // Stores the last packet sent during the Unvalidated Phase
+    SafeRetreat(u64),
+    Normal,
 }
 
 impl Default for CrState {
-    fn default() -> Self { CrState::OBSERVE }
+    fn default() -> Self { CrState::Reconnaissance }
 }
 
-#[derive(Default)]
 pub struct Resume {
+    trace_id: String,
     enabled: bool,
-
     cr_state: CrState,
-
     previous_rtt: Duration,
-
-    jump_window: usize,
-
-    pub cr_mark: u64,
-
-    pub pipesize: usize,
-
-    recover: u64,
+    previous_cwnd: usize,
+    pipesize: usize,
 }
 
 impl std::fmt::Debug for Resume {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "cr_state={:?} ", self.cr_state)?;
-        write!(f, "last_rtt={:?} ", self.previous_rtt)?;
-        write!(f, "jump_window={:?} ", self.jump_window)?;
-        write!(f, "cr_mark={:?} ", self.cr_mark)?;
+        write!(f, "previous_rtt={:?} ", self.previous_rtt)?;
+        write!(f, "previous_cwnd={:?} ", self.previous_cwnd)?;
         write!(f, "pipesize={:?} ", self.pipesize)?;
-        write!(f, "recover={:?} ", self.recover)?;
 
         Ok(())
     }
 }
 
 impl Resume {
-    pub fn new(enabled: bool) -> Self {
+    pub fn new(trace_id: &str) -> Self {
         Self {
-            enabled,
-
-            //Starting at recon as draft does not yet discuss observe
-            cr_state: CrState::RECON,
-
-            previous_rtt: PREVIOUS_RTT,
-
-            jump_window: JUMP_WINDOW,
-
+            trace_id: trace_id.to_string(),
+            enabled: false,
+            cr_state: CrState::Reconnaissance,
+            previous_rtt: Duration::ZERO,
+            previous_cwnd: 0,
             pipesize: 0,
-
-            recover: 0,
-
-            ..Default::default()
         }
     }
 
+    pub fn setup(&mut self, previous_rtt: Duration, previous_cwnd: usize) {
+        self.enabled = true;
+        self.previous_rtt = previous_rtt;
+        self.previous_cwnd = previous_cwnd;
+        trace!("{} careful resume configured", self.trace_id);
+    }
+
     pub fn reset(&mut self) {
-        *self = Self::new(self.enabled);
+        self.cr_state = CrState::Reconnaissance;
+        self.pipesize = 0;
     }
 
     pub fn enabled(&self) -> bool {
         if self.enabled {
-            match self.cr_state {
-                CrState::NORMAL => false,
-                _ => true,
-            }
+            self.cr_state != CrState::Normal
         } else {
             false
         }
     }
 
-    pub fn process_ack(&mut self, largest_pkt_sent: u64, packet: &Acked, flightsize: usize) -> usize {
-
-        if let CrState::UNVAL = self.cr_state {
-           self.pipesize += packet.size;
-           }
-
-        if let CrState::VALIDATE = self.cr_state {
-           self.pipesize += packet.size;
-           }
-
-        match (&self.cr_state, packet.pkt_num >= self.cr_mark) {
-            (CrState::UNVAL, true) => {
-                // move to validating
-                self.cr_state = CrState::VALIDATE;
-                self.cr_mark  = largest_pkt_sent;
-                return flightsize;
-            }
-            (CrState::VALIDATE, true) => {
-                self.cr_state = CrState::NORMAL;
-            }
-            _ => {
-                //in here we can handle other cases
-            }
-        }
-        // this is do_recovery!
-        if let CrState::RETREAT = self.cr_state {
-
-            if packet.pkt_num < self.recover {
+    // Returns (new_cwnd, new_ssthresh), both optional
+    pub fn process_ack(
+        &mut self, largest_pkt_sent: u64, packet: &Acked, flightsize: usize
+    ) -> (Option<usize>, Option<usize>) {
+        match self.cr_state {
+            CrState::Unvalidated(first_packet) => {
                 self.pipesize += packet.size;
+                if packet.pkt_num >= first_packet {
+                    trace!("{} entering careful resume validating phase", self.trace_id);
+                    // Store the last packet number that was sent in the Unvalidated Phase
+                    self.cr_state = CrState::Validating(largest_pkt_sent);
+                    (Some(flightsize), None)
+                } else {
+                    (None, None)
+                }
             }
-            else {
-                self.cr_state = CrState::NORMAL;
-                return self.pipesize;
+            CrState::Validating(last_packet) => {
+                self.pipesize += packet.size;
+                if packet.pkt_num >= last_packet {
+                    trace!("{} careful resume complete", self.trace_id);
+                    self.cr_state = CrState::Normal;
+                }
+                (None, None)
             }
+            CrState::SafeRetreat(last_packet) => {
+                if packet.pkt_num < last_packet {
+                    self.pipesize += packet.size;
+                    (None, None)
+                } else {
+                    trace!("{} careful resume complete", self.trace_id);
+                    self.cr_state = CrState::Normal;
+                    (None, Some(self.pipesize))
+                }
+            }
+            _ => (None, None)
         }
-        //otherwise we return 0 aka we don't touch ssthresh
-        return 0;
     }
 
-    pub fn send_packet(&mut self, rtt_sample: Duration, flightsize: usize, cwnd: usize, smss: usize, largest_pkt_sent: u64) -> usize {
-        match (&self.cr_state, flightsize >= cwnd) {
-            (CrState::RECON, true) => {
-                if cwnd >= self.jump_window * smss {
-                    self.cr_state = CrState::NORMAL;
-                    return 0;
-                }
-                if rtt_sample <= self.previous_rtt / 2 || rtt_sample >= self.previous_rtt * 10 {
-                    self.cr_state = CrState::NORMAL;
-                    return 0;
-                }
-                // move to validating and update mark
-                self.cr_state = CrState::UNVAL;
-                self.cr_mark = largest_pkt_sent;
-                self.pipesize = flightsize;
-                // we return the jump window, CC code handles the increase in cwnd
-                return self.jump_window * smss - flightsize;
-            }
-            _ => {
-                // Otherwise we don't touch the cwnd
+    pub fn send_packet(
+        &mut self, rtt_sample: Duration, cwnd: usize, largest_pkt_sent: u64, app_limited: bool,
+    ) -> usize {
+        // Do nothing when data limited to avoid having insufficient data
+        // to be able to validate transmission at a higher rate
+        if app_limited {
+            return 0;
+        }
+
+        if self.cr_state == CrState::Reconnaissance {
+            // Confirm RTT is similar to that of the previous connection
+            if rtt_sample <= self.previous_rtt / 2 || rtt_sample >= self.previous_rtt * 10 {
+                trace!(
+                    "{} current RTT too divergent from previous RTT - not using careful resume; \
+                    rtt_sample={:?} previous_rtt={:?}",
+                    self.trace_id, rtt_sample, self.previous_rtt
+                );
+                self.cr_state = CrState::Normal;
                 return 0;
             }
+
+            // Store the first packet number that was sent in the Unvalidated Phase
+            trace!("{} entering careful resume unvalidated phase", self.trace_id);
+            self.cr_state = CrState::Unvalidated(largest_pkt_sent);
+            self.pipesize = cwnd;
+            // we return the jump window, CC code handles the increase in cwnd
+            return (self.previous_cwnd / 2) - cwnd;
+        }
+
+        0
+    }
+
+    pub fn congestion_event(&mut self, largest_pkt_sent: u64) -> usize {
+        match self.cr_state {
+            CrState::Unvalidated(_) => {
+                trace!("{} congestion during unvalidated phase", self.trace_id);
+                // TODO: mark used CR parameters as invalid for future connections
+                self.cr_state = CrState::SafeRetreat(largest_pkt_sent);
+                self.pipesize / 2
+            }
+            CrState::Validating(p) => {
+                trace!("{} congestion during validating phase", self.trace_id);
+                // TODO: mark used CR parameters as invalid for future connections
+                self.cr_state = CrState::SafeRetreat(p);
+                self.pipesize / 2
+            }
+            CrState::Reconnaissance => {
+                trace!("{} congestion during reconnaissance - abandoning careful resume", self.trace_id);
+                self.cr_state = CrState::Normal;
+                0
+            }
+            _ => {
+                0
+            }
         }
     }
 
-    pub fn congestion_event(&mut self, largest_pkt_sent: u64) -> bool {
+    pub fn get_cr_mark(&self) -> u64 {
         match self.cr_state {
-            CrState::VALIDATE | CrState::UNVAL => {
-                self.cr_state = CrState::RETREAT;
-                self.recover = largest_pkt_sent;
-                true
-            }
-            _ => {
-                false
-            }
+            CrState::Reconnaissance | CrState::Normal => 0,
+            CrState::Unvalidated(m) | CrState::Validating(m) | CrState::SafeRetreat(m) => m,
         }
     }
 
     pub fn get_cr_state(&self) -> u64 {
         match self.cr_state {
-            CrState::OBSERVE => { 0 }
-            CrState::RECON => { 1 }
-            CrState::UNVAL => { 2 }
-            CrState::VALIDATE => { 3 }
-            CrState::NORMAL => { 4 }
-            CrState::RETREAT => { 100 }
+            CrState::Reconnaissance => { 1 }
+            CrState::Unvalidated(_) => { 2 }
+            CrState::Validating(_) => { 3 }
+            CrState::Normal => { 4 }
+            CrState::SafeRetreat(_) => { 100 }
         }
     }
-
-    pub fn in_retreat(&self) -> bool {
-        if self.enabled {
-            match self.cr_state {
-                CrState::RETREAT => true,
-                _ => false,
-            }
-        } else {
-            false
-        }
-    }
-
 }
 
 pub struct CRMetrics {
@@ -194,7 +189,7 @@ pub struct CRMetrics {
     iw: usize,
     min_rtt: Duration,
     cwnd: usize,
-    last_update: Instant
+    last_update: Instant,
 }
 
 impl CRMetrics {
@@ -204,10 +199,11 @@ impl CRMetrics {
             iw,
             min_rtt: Duration::ZERO,
             cwnd: 0,
-            last_update: Instant::now()
+            last_update: Instant::now(),
         }
     }
 
+    // Implementation of the CR observe phase
     pub fn maybe_update(&mut self, new_min_rtt: Duration, new_cwnd: usize) -> Option<CREvent> {
         // Initial guess at something that might work, needs further research
         let now = Instant::now();
@@ -254,7 +250,7 @@ impl CRMetrics {
 
             Some(CREvent {
                 cwnd: new_cwnd,
-                min_rtt: new_min_rtt
+                min_rtt: new_min_rtt,
             })
         } else {
             None
@@ -262,6 +258,7 @@ impl CRMetrics {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct CREvent {
     pub min_rtt: Duration,
     pub cwnd: usize,

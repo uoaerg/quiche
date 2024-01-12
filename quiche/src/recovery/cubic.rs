@@ -203,11 +203,11 @@ fn on_packet_sent(r: &mut Recovery, sent_bytes: usize, now: Instant) {
 }
 
 fn on_packets_acked(
-    r: &mut Recovery, packets: &mut Vec<Acked>, epoch: packet::Epoch,
+    r: &mut Recovery, packets: &[Acked], epoch: packet::Epoch,
     now: Instant,
 ) {
-    for pkt in packets.drain(..) {
-        on_packet_acked(r, &pkt, epoch, now);
+    for pkt in packets {
+        on_packet_acked(r, pkt, epoch, now);
     }
 }
 
@@ -252,10 +252,6 @@ fn on_packet_acked(
                 return;
             }
         }
-         if r.resume.in_retreat() {
-             r.congestion_window += r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
-         }
-
     }
 
     if r.congestion_window < r.ssthresh {
@@ -264,9 +260,6 @@ fn on_packet_acked(
         r.bytes_acked_sl += packet.size;
 
         if r.bytes_acked_sl >= r.max_datagram_size {
-            if r.resume.enabled() {
-            r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
-            }
             if r.hystart.in_css(epoch) {
                 r.congestion_window +=
                     r.hystart.css_cwnd_inc(r.max_datagram_size);
@@ -403,13 +396,6 @@ fn congestion_event(
         if r.hystart.in_css(epoch) {
             r.hystart.congestion_event();
         }
-
-        if r.resume.enabled() {
-            if r.resume.congestion_event(largest_lost_pkt.pkt_num) {
-                r.ssthresh = r.congestion_window/2;
-               // r.congestion_window = r.initial_congestion_window_packets; <- this is done by cubic above
-            }
-            }
 
         r.prr.congestion_event(r.bytes_in_flight);
     }

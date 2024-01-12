@@ -61,11 +61,11 @@ pub fn on_packet_sent(r: &mut Recovery, sent_bytes: usize, _now: Instant) {
 }
 
 fn on_packets_acked(
-    r: &mut Recovery, packets: &mut Vec<Acked>, epoch: packet::Epoch,
+    r: &mut Recovery, packets: &[Acked], epoch: packet::Epoch,
     now: Instant,
 ) {
-    for pkt in packets.drain(..) {
-        on_packet_acked(r, &pkt, epoch, now);
+    for pkt in packets {
+        on_packet_acked(r, pkt, epoch, now);
     }
 }
 
@@ -74,16 +74,6 @@ fn on_packet_acked(
 ) {
     r.bytes_in_flight = r.bytes_in_flight.saturating_sub(packet.size);
 
-    if r.in_congestion_recovery(packet.time_sent) {
-         if r.resume.in_retreat() {
-             let pipe = r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
-             if pipe > 0 {
-                 r.ssthresh = pipe;
-             }
-          }
-        return;
-    }
-
     if r.app_limited {
         return;
     }
@@ -91,13 +81,6 @@ fn on_packet_acked(
         // In Slow slart, bytes_acked_sl is used for counting
         // acknowledged bytes.
         r.bytes_acked_sl += packet.size;
-
-        if r.resume.enabled() {
-           let win = r.resume.process_ack(r.largest_sent_pkt[epoch], packet, r.bytes_in_flight);
-            if win > 0 {
-                r.congestion_window = win;
-            }
-          }
 
         if r.hystart.in_css(epoch) {
             r.congestion_window += r.hystart.css_cwnd_inc(r.max_datagram_size);
@@ -148,12 +131,6 @@ fn congestion_event(
 
         if r.hystart.in_css(epoch) {
             r.hystart.congestion_event();
-        }
-        if r.resume.enabled() {
-            if r.resume.congestion_event(largest_lost_pkt.pkt_num) {
-                r.congestion_window = r.resume.pipesize/2;
-            }
-
         }
     }
 }

@@ -562,14 +562,14 @@ fn on_packet_sent(r: &mut Recovery, sent_bytes: usize, now: Instant) {
 }
 
 fn on_packets_acked(
-    r: &mut Recovery, packets: &mut Vec<Acked>, _epoch: packet::Epoch,
+    r: &mut Recovery, packets: &[Acked], _epoch: packet::Epoch,
     now: Instant,
 ) {
     r.bbr2_state.newly_acked_bytes = 0;
 
     let time_sent = packets.last().map(|pkt| pkt.time_sent);
 
-    for p in packets.drain(..) {
+    for p in packets {
         r.bbr2_state.prior_bytes_in_flight = r.bytes_in_flight;
 
         per_ack::bbr2_update_model_and_state(r, &p, now);

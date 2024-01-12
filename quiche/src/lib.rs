@@ -414,6 +414,7 @@ use std::str::FromStr;
 
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use smallvec::SmallVec;
 
@@ -2138,7 +2139,7 @@ impl Connection {
 
     /// The token received from the peer in the INITIAL packet
     #[inline]
-    pub fn peer_token(&mut self) -> Option<&[u8]> {
+    pub fn peer_token(&self) -> Option<&[u8]> {
         self.peer_token.as_deref()
     }
 
@@ -2146,6 +2147,12 @@ impl Connection {
     #[inline]
     pub fn recv_new_token(&mut self) -> Option<Vec<u8>> {
         self.received_tokens.pop_front()
+    }
+
+    pub fn setup_careful_resume(&mut self, previous_rtt: Duration, previous_cwnd: usize) -> Result<()> {
+        self.paths.get_active_mut()?.recovery
+            .setup_careful_resume(previous_rtt, previous_cwnd);
+        Ok(())
     }
 
     /// Processes QUIC packets received from the peer.
@@ -16468,6 +16475,7 @@ pub use crate::path::PathStats;
 pub use crate::path::SocketAddrIter;
 
 pub use crate::recovery::CongestionControlAlgorithm;
+pub use crate::recovery::CREvent;
 
 pub use crate::stream::StreamIter;
 
