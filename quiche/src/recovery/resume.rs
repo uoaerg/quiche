@@ -190,18 +190,20 @@ impl Resume {
 }
 
 pub struct CRMetrics {
+    trace_id: String,
+    iw: usize,
     min_rtt: Duration,
     cwnd: usize,
-    iw: usize,
     last_update: Instant
 }
 
 impl CRMetrics {
-    pub fn new(iw: usize) -> Self {
+    pub fn new(trace_id: &str, iw: usize) -> Self {
         Self {
+            trace_id: trace_id.to_string(),
+            iw,
             min_rtt: Duration::ZERO,
             cwnd: 0,
-            iw,
             last_update: Instant::now()
         }
     }
@@ -240,7 +242,10 @@ impl CRMetrics {
             }
         };
 
-        trace!("maybe_update(new_min_rtt={:?}, new_cwnd={}); updating={}", new_min_rtt, new_cwnd, should_update);
+        trace!(
+            "{} maybe_update(new_min_rtt={:?}, new_cwnd={}); updating={}",
+            self.trace_id, new_min_rtt, new_cwnd, should_update
+        );
 
         if should_update {
             self.min_rtt = new_min_rtt;

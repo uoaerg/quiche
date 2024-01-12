@@ -1755,11 +1755,14 @@ impl Connection {
             None
         };
 
+        let trace_id = scid_as_hex.join("");
+
         let recovery_config = recovery::RecoveryConfig::from_config(config);
 
         let mut path = path::Path::new(
             local,
             peer,
+            &trace_id,
             &recovery_config,
             config.path_challenge_recv_max_queue_len,
             true,
@@ -1790,7 +1793,7 @@ impl Connection {
 
             ids,
 
-            trace_id: scid_as_hex.join(""),
+            trace_id,
 
             pkt_num_spaces: [
                 packet::PktNumSpace::new(),
@@ -7431,6 +7434,7 @@ impl Connection {
         let mut path = path::Path::new(
             info.to,
             info.from,
+            &self.trace_id,
             &self.recovery_config,
             self.path_challenge_recv_max_queue_len,
             false,
@@ -7559,6 +7563,7 @@ impl Connection {
         let mut path = path::Path::new(
             local_addr,
             peer_addr,
+            &self.trace_id,
             &self.recovery_config,
             self.path_challenge_recv_max_queue_len,
             false,

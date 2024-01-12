@@ -201,7 +201,7 @@ impl Path {
     /// Create a new Path instance with the provided addresses, the remaining of
     /// the fields being set to their default value.
     pub fn new(
-        local_addr: SocketAddr, peer_addr: SocketAddr,
+        local_addr: SocketAddr, peer_addr: SocketAddr, trace_id: &str,
         recovery_config: &recovery::RecoveryConfig,
         path_challenge_recv_max_queue_len: usize, is_initial: bool,
     ) -> Self {
@@ -211,6 +211,8 @@ impl Path {
             (PathState::Unknown, None, None)
         };
 
+        let trace_id = format!("{} - {}<->{}", trace_id, local_addr, peer_addr);
+
         Self {
             local_addr,
             peer_addr,
@@ -218,7 +220,7 @@ impl Path {
             active_dcid_seq,
             state,
             active: false,
-            recovery: recovery::Recovery::new_with_config(recovery_config),
+            recovery: recovery::Recovery::new_with_config(recovery_config, &trace_id),
             in_flight_challenges: VecDeque::new(),
             max_challenge_size: 0,
             probing_lost: 0,

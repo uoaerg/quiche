@@ -207,7 +207,7 @@ impl RecoveryConfig {
 }
 
 impl Recovery {
-    pub fn new_with_config(recovery_config: &RecoveryConfig) -> Self {
+    pub fn new_with_config(recovery_config: &RecoveryConfig, trace_id: &str) -> Self {
         let initial_congestion_window = recovery_config.max_send_udp_payload_size *
             recovery_config.initial_congestion_window_packets;
 
@@ -296,7 +296,7 @@ impl Recovery {
             prr: prr::PRR::default(),
 
             resume: resume::Resume::new(recovery_config.resume),
-            cr_metrics: resume::CRMetrics::new(initial_congestion_window),
+            cr_metrics: resume::CRMetrics::new(trace_id, initial_congestion_window),
 
             send_quantum: initial_congestion_window,
 
@@ -314,8 +314,8 @@ impl Recovery {
         }
     }
 
-    pub fn new(config: &Config) -> Self {
-        Self::new_with_config(&RecoveryConfig::from_config(config))
+    pub fn new(config: &Config, trace_id: &str) -> Self {
+        Self::new_with_config(&RecoveryConfig::from_config(config), trace_id)
     }
 
     pub fn on_init(&mut self) {
