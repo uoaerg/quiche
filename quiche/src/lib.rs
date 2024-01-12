@@ -1488,6 +1488,8 @@ pub struct Connection {
 
     /// The number of streams stopped by remote.
     stopped_stream_remote_count: u64,
+
+    cr_event: Option<recovery::CREvent>,
 }
 
 /// Creates a new server-side connection.
@@ -1923,6 +1925,8 @@ impl Connection {
             stopped_stream_local_count: 0,
             reset_stream_remote_count: 0,
             stopped_stream_remote_count: 0,
+
+            cr_event: None,
         };
 
         if let Some(odcid) = odcid {
@@ -2876,12 +2880,18 @@ impl Connection {
             q.add_event_data_with_instant(ev_data, now).ok();
         });
 
+        let recv_path = self.paths.get_mut(recv_pid)?;
         qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
-            let recv_path = self.paths.get_mut(recv_pid)?;
             if let Some(ev_data) = recv_path.recovery.maybe_qlog() {
                 q.add_event_data_with_instant(ev_data, now).ok();
             }
         });
+
+        if recv_path.active() {
+            if let Some(cr_event) = recv_path.recovery.maybe_cr_event() {
+                self.update_cr_event(cr_event);
+            }
+        }
 
         if let Some(e) = frame_processing_err {
             // Any frame error is terminal, so now just return.
@@ -4450,6 +4460,12 @@ impl Connection {
 
         path.max_send_bytes = path.max_send_bytes.saturating_sub(written);
 
+        if path.active() {
+            if let Some(cr_event) = path.recovery.maybe_cr_event() {
+                self.update_cr_event(cr_event);
+            }
+        }
+
         // On the client, drop initial state after sending an Handshake packet.
         if !self.is_server && hdr_ty == packet::Type::Handshake {
             self.drop_epoch_state(packet::Epoch::Initial, now);
@@ -5691,6 +5707,7 @@ impl Connection {
 
         let handshake_status = self.handshake_status();
 
+        let mut update = None;
         for (_, p) in self.paths.iter_mut() {
             if let Some(timer) = p.recovery.loss_detection_timer() {
                 if timer <= now {
@@ -5711,8 +5728,18 @@ impl Connection {
                             q.add_event_data_with_instant(ev_data, now).ok();
                         }
                     });
+
+                    if p.active() {
+                        if let Some(cr_event) = p.recovery.maybe_cr_event() {
+                            update = Some(cr_event);
+                        }
+                    }
                 }
             }
+        }
+
+        if let Some(cr_event) = update {
+            self.update_cr_event(cr_event);
         }
 
         // Notify timeout events to the application.
@@ -7554,6 +7581,15 @@ impl Connection {
             self.qlog.streamer = None;
         }
         self.closed = true;
+    }
+
+    fn update_cr_event(&mut self, event: recovery::CREvent) {
+        self.cr_event.replace(event);
+    }
+
+    /// Returns a new set of congestion control parameters to be used for Careful Resume, if availbale
+    pub fn cr_event(&mut self) -> Option<recovery::CREvent> {
+        self.cr_event.take()
     }
 }
 

@@ -1,11 +1,13 @@
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use crate::recovery::Acked;
 
 
 // to be initialised from environment variables later
 const PREVIOUS_RTT: Duration = Duration::from_millis(600);
 const JUMP_WINDOW: usize = 2000;
+
+const CR_EVENT_MAXIMUM_GAP: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 pub enum CrState {
@@ -185,4 +187,77 @@ impl Resume {
         }
     }
 
+}
+
+pub struct CRMetrics {
+    min_rtt: Duration,
+    cwnd: usize,
+    iw: usize,
+    last_update: Instant
+}
+
+impl CRMetrics {
+    pub fn new(iw: usize) -> Self {
+        Self {
+            min_rtt: Duration::ZERO,
+            cwnd: 0,
+            iw,
+            last_update: Instant::now()
+        }
+    }
+
+    pub fn maybe_update(&mut self, new_min_rtt: Duration, new_cwnd: usize) -> Option<CREvent> {
+        // Initial guess at something that might work, needs further research
+        let now = Instant::now();
+        let time_since_last_update = now - self.last_update;
+
+        let should_update = if new_cwnd < self.iw * 4 {
+            false
+        } else if time_since_last_update > CR_EVENT_MAXIMUM_GAP {
+            true
+        } else {
+            let secs_since_last_update = time_since_last_update.as_secs_f64();
+            if secs_since_last_update == 0.0 {
+                false
+            } else {
+                let range = 1.0f64 / secs_since_last_update;
+
+                let min_rtt_micros = self.min_rtt.as_micros() as f64;
+                let min_rtt_range_spread = min_rtt_micros * range;
+                let min_rtt_range_min = min_rtt_micros - min_rtt_range_spread;
+                let min_rtt_range_max = min_rtt_micros + min_rtt_range_spread;
+
+                let cwnd = self.cwnd as f64;
+                let cwnd_range_spread = cwnd * range;
+                let cwnd_range_min = cwnd - cwnd_range_spread;
+                let cwnd_range_max = cwnd + cwnd_range_spread;
+
+                let new_min_rtt_micros = new_min_rtt.as_micros() as f64;
+                let new_cwnd_float = new_cwnd as f64;
+
+                new_min_rtt_micros < min_rtt_range_min || new_min_rtt_micros > min_rtt_range_max ||
+                    new_cwnd_float < cwnd_range_min || new_cwnd_float > cwnd_range_max
+            }
+        };
+
+        trace!("maybe_update(new_min_rtt={:?}, new_cwnd={}); updating={}", new_min_rtt, new_cwnd, should_update);
+
+        if should_update {
+            self.min_rtt = new_min_rtt;
+            self.cwnd = new_cwnd;
+            self.last_update = now;
+
+            Some(CREvent {
+                cwnd: new_cwnd,
+                min_rtt: new_min_rtt
+            })
+        } else {
+            None
+        }
+    }
+}
+
+pub struct CREvent {
+    pub min_rtt: Duration,
+    pub cwnd: usize,
 }

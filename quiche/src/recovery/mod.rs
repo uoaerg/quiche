@@ -46,6 +46,8 @@ use qlog::events::EventData;
 
 use smallvec::SmallVec;
 
+pub use resume::CREvent;
+
 // Loss Recovery
 const INITIAL_PACKET_THRESHOLD: u64 = 3;
 
@@ -155,6 +157,7 @@ pub struct Recovery {
 
     //Careful resume
     resume: resume::Resume,
+    cr_metrics: resume::CRMetrics,
 
     #[cfg(feature = "qlog")]
     qlog_metrics: QlogMetrics,
@@ -293,6 +296,7 @@ impl Recovery {
             prr: prr::PRR::default(),
 
             resume: resume::Resume::new(recovery_config.resume),
+            cr_metrics: resume::CRMetrics::new(initial_congestion_window),
 
             send_quantum: initial_congestion_window,
 
@@ -1105,6 +1109,10 @@ impl Recovery {
 
     pub fn delivery_rate_update_app_limited(&mut self, v: bool) {
         self.delivery_rate.update_app_limited(v);
+    }
+
+    pub fn maybe_cr_event(&mut self) -> Option<resume::CREvent> {
+        self.cr_metrics.maybe_update(self.min_rtt, self.congestion_window)
     }
 
     #[cfg(feature = "qlog")]
