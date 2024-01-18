@@ -96,13 +96,13 @@ impl Resume {
                 (None, None)
             }
             CrState::SafeRetreat(last_packet) => {
-                if packet.pkt_num < last_packet {
-                    self.pipesize += packet.size;
-                    (None, None)
-                } else {
+                if packet.pkt_num >= last_packet {
                     trace!("{} careful resume complete", self.trace_id);
                     self.cr_state = CrState::Normal;
                     (None, Some(self.pipesize))
+                } else {
+                    self.pipesize += packet.size;
+                    (None, None)
                 }
             }
             _ => (None, None)

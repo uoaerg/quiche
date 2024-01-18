@@ -127,6 +127,7 @@ pub struct Recovery {
     cc_ops: &'static CongestionControlOps,
 
     congestion_window: usize,
+    initial_window: usize,
 
     bytes_in_flight: usize,
 
@@ -252,6 +253,7 @@ impl Recovery {
             in_flight_count: [0; packet::Epoch::count()],
 
             congestion_window: initial_congestion_window,
+            initial_window: initial_congestion_window,
 
             pkt_thresh: INITIAL_PACKET_THRESHOLD,
 
@@ -321,8 +323,7 @@ impl Recovery {
     }
 
     pub fn reset(&mut self) {
-        self.congestion_window =
-            self.max_datagram_size * self.initial_congestion_window_packets;
+        self.congestion_window = self.initial_window;
         self.in_flight_count = [0; packet::Epoch::count()];
         self.congestion_recovery_start_time = None;
         self.ssthresh = usize::MAX;
@@ -371,16 +372,16 @@ impl Recovery {
 
             self.on_packet_sent_cc(sent_bytes, now);
 
+            if self.resume.enabled() && epoch == packet::Epoch::Application {
+                // Increase the congestion window by a jump determined by careful resume
+                self.congestion_window += self.resume.send_packet(
+                    self.latest_rtt, self.congestion_window, self.largest_sent_pkt[epoch], self.app_limited
+                );
+            }
+
             self.prr.on_packet_sent(sent_bytes);
 
             self.set_loss_detection_timer(handshake_status, now);
-        }
-
-        if self.resume.enabled() && epoch == packet::Epoch::Application {
-            // Increase the congestion window by a jump determined by careful resume
-            self.congestion_window += self.resume.send_packet(
-                self.latest_rtt, self.congestion_window, self.largest_sent_pkt[epoch], self.app_limited
-            );
         }
 
         // HyStart++: Start of the round in a slow start.
@@ -439,8 +440,7 @@ impl Recovery {
 
         let is_app = epoch == packet::Epoch::Application;
 
-        let in_initcwnd = self.bytes_sent <
-            self.max_datagram_size * self.initial_congestion_window_packets;
+        let in_initcwnd = self.bytes_sent < self.initial_window;
 
         let sent_bytes = if !self.pacer.enabled() || !is_app || in_initcwnd {
             0
@@ -614,8 +614,6 @@ impl Recovery {
         let (lost_packets, lost_bytes) =
             self.detect_lost_packets(epoch, now, trace_id);
 
-        self.on_packets_acked(newly_acked, epoch, now);
-
         if self.resume.enabled() {
             for packet in newly_acked {
                 let (new_cwnd, new_ssthresh) = self.resume.process_ack(
@@ -629,6 +627,8 @@ impl Recovery {
                 }
             }
         }
+
+        self.on_packets_acked(newly_acked, epoch, now);
 
         self.pto_count = 0;
 
@@ -788,9 +788,7 @@ impl Recovery {
             cmp::min(self.max_datagram_size, new_max_datagram_size);
 
         // Update cwnd if it hasn't been updated yet.
-        if self.congestion_window ==
-            self.max_datagram_size * self.initial_congestion_window_packets
-        {
+        if self.congestion_window == self.initial_window {
             self.congestion_window =
                 max_datagram_size * self.initial_congestion_window_packets;
         }
@@ -1108,7 +1106,7 @@ impl Recovery {
         if self.resume.enabled() {
             let new_cwnd = self.resume.congestion_event(self.largest_sent_pkt[epoch]);
             if new_cwnd != 0 {
-                self.congestion_window = std::cmp::max(new_cwnd, self.congestion_window);
+                self.congestion_window = cmp::max(new_cwnd, self.initial_window);
             }
         }
     }
