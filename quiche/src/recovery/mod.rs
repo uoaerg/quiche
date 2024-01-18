@@ -615,7 +615,7 @@ impl Recovery {
             self.detect_lost_packets(epoch, now, trace_id);
 
         if self.resume.enabled() {
-            for packet in newly_acked {
+            for packet in newly_acked.iter() {
                 let (new_cwnd, new_ssthresh) = self.resume.process_ack(
                     self.largest_sent_pkt[epoch], packet, self.bytes_in_flight
                 );
@@ -1551,7 +1551,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         // cwnd will be reset.
         r.collapse_cwnd();
@@ -1563,7 +1563,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         let mut now = Instant::now();
 
@@ -1810,7 +1810,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         let mut now = Instant::now();
 
@@ -1979,7 +1979,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         let mut now = Instant::now();
 
@@ -2161,7 +2161,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(CongestionControlAlgorithm::CUBIC);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         let mut now = Instant::now();
 

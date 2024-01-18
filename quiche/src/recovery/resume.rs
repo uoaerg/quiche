@@ -119,6 +119,8 @@ impl Resume {
         }
 
         if self.cr_state == CrState::Reconnaissance {
+            let jump = (self.previous_cwnd / 2) - cwnd;
+
             // Confirm RTT is similar to that of the previous connection
             if rtt_sample <= self.previous_rtt / 2 || rtt_sample >= self.previous_rtt * 10 {
                 trace!(
@@ -262,4 +264,49 @@ impl CRMetrics {
 pub struct CREvent {
     pub min_rtt: Duration,
     pub cwnd: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // for cwnd > jump window, check crstate moves to normal
+    #[test]
+    fn cwnd_larger_than_jump() {
+        let mut r = Resume::new("");
+        r.setup(Duration::ZERO, 12_000);
+        r.send_packet(Duration::ZERO, 15_000, 50, false);
+
+        assert_eq!(r.cr_state, CrState::Normal);
+    }
+
+    // for a set rtt that does not meet the conditions, check crstate moves to normal
+    #[test]
+    fn rtt_less_than_half() {
+        let mut r = Resume::new("");
+        r.setup(Duration::from_millis(50), 12_000);
+        r.send_packet(Duration::from_millis(10), 1_350, 10, false);
+
+        assert_eq!(r.cr_state, CrState::Normal);
+    }
+
+    #[test]
+    fn rtt_greater_than_10() {
+        let mut r = Resume::new("");
+        r.setup(Duration::from_millis(50), 12_000);
+        r.send_packet(Duration::from_millis(600), 1_350, 10, false);
+
+        assert_eq!(r.cr_state, CrState::Normal);
+    }
+
+    // for a set rtt that meets the conditions and assuming cwnd = jump window already, check we move to unvalidated
+    #[test]
+    fn valid_rtt() {
+        let mut r = Resume::new("");
+        r.setup(Duration::from_millis(50), 12_000);
+        r.send_packet(Duration::from_millis(60), 1_350, 10, false);
+
+        assert_eq!(r.cr_state, CrState::Unvalidated(10));
+        assert_eq!(r.pipesize, 1_350);
+    }
 }

@@ -923,6 +923,7 @@ mod tests {
         let path = Path::new(
             client_addr,
             server_addr,
+            "",
             &recovery_config,
             config.path_challenge_recv_max_queue_len,
             true,
@@ -932,6 +933,7 @@ mod tests {
         let probed_path = Path::new(
             client_addr_2,
             server_addr,
+            "",
             &recovery_config,
             config.path_challenge_recv_max_queue_len,
             false,
@@ -1008,6 +1010,7 @@ mod tests {
         let path = Path::new(
             client_addr,
             server_addr,
+            "",
             &recovery_config,
             config.path_challenge_recv_max_queue_len,
             true,
@@ -1016,6 +1019,7 @@ mod tests {
         let mut server_path = Path::new(
             server_addr,
             client_addr,
+            "",
             &recovery_config,
             config.path_challenge_recv_max_queue_len,
             false,
@@ -1098,6 +1102,7 @@ mod tests {
         let path = Path::new(
             client_addr,
             server_addr,
+            "",
             &recovery_config,
             config.path_challenge_recv_max_queue_len,
             true,
@@ -1106,6 +1111,7 @@ mod tests {
         let mut server_path = Path::new(
             server_addr,
             client_addr,
+            "",
             &recovery_config,
             config.path_challenge_recv_max_queue_len,
             false,

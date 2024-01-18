@@ -365,16 +365,14 @@ fn debug_fmt(r: &Recovery, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 mod tests {
     use super::*;
 
-    use crate::recovery;
-
     use smallvec::smallvec;
 
     #[test]
     fn bbr_init() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         // on_init() is called in Connection::new(), so it need to be
         // called manually here.
@@ -391,10 +389,10 @@ mod tests {
 
     #[test]
     fn bbr_send() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
 
         r.on_init();
@@ -405,10 +403,10 @@ mod tests {
 
     #[test]
     fn bbr_startup() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 
@@ -475,10 +473,10 @@ mod tests {
 
     #[test]
     fn bbr_congestion_event() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 
@@ -542,10 +540,10 @@ mod tests {
 
     #[test]
     fn bbr_drain() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 
@@ -665,10 +663,10 @@ mod tests {
 
     #[test]
     fn bbr_probe_bw() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 
@@ -734,10 +732,10 @@ mod tests {
 
     #[test]
     fn bbr_probe_rtt() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 

@@ -679,14 +679,12 @@ mod tests {
 
     use smallvec::smallvec;
 
-    use crate::recovery;
-
     #[test]
     fn bbr_init() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR2);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         // on_init() is called in Connection::new(), so it need to be
         // called manually here.
@@ -703,10 +701,10 @@ mod tests {
 
     #[test]
     fn bbr2_send() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR2);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
 
         r.on_init();
@@ -717,10 +715,10 @@ mod tests {
 
     #[test]
     fn bbr2_startup() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR2);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 
@@ -786,10 +784,10 @@ mod tests {
 
     #[test]
     fn bbr2_congestion_event() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR2);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 
@@ -856,10 +854,10 @@ mod tests {
 
     #[test]
     fn bbr2_probe_bw() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR2);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 
@@ -976,10 +974,10 @@ mod tests {
 
     #[test]
     fn bbr2_probe_rtt() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        let mut cfg = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::BBR2);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let mss = r.max_datagram_size;
 

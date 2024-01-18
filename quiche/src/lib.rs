@@ -8726,12 +8726,13 @@ mod tests {
             initial_source_connection_id: Some(b"woot woot".to_vec().into()),
             retry_source_connection_id: Some(b"retry".to_vec().into()),
             max_datagram_frame_size: Some(32),
+            bdp_tokens: true,
         };
 
         let mut raw_params = [42; 256];
         let raw_params =
             TransportParams::encode(&tp, true, &mut raw_params).unwrap();
-        assert_eq!(raw_params.len(), 94);
+        assert_eq!(raw_params.len(), 98);
 
         let new_tp = TransportParams::decode(raw_params, false).unwrap();
 
@@ -8756,6 +8757,7 @@ mod tests {
             initial_source_connection_id: Some(b"woot woot".to_vec().into()),
             retry_source_connection_id: None,
             max_datagram_frame_size: Some(32),
+            bdp_tokens: true,
         };
 
         let mut raw_params = [42; 256];

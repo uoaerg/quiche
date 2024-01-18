@@ -175,7 +175,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::Reno);
 
-        let r = Recovery::new(&cfg);
+        let r = Recovery::new(&cfg, "");
 
         assert!(r.cwnd() > 0);
         assert_eq!(r.bytes_in_flight, 0);
@@ -186,7 +186,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         let now = Instant::now();
 
@@ -200,7 +200,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         let now = Instant::now();
 
@@ -253,7 +253,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         let now = Instant::now();
 
@@ -332,7 +332,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
 
         let prev_cwnd = r.cwnd();
 
@@ -372,7 +372,7 @@ mod tests {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::Reno);
 
-        let mut r = Recovery::new(&cfg);
+        let mut r = Recovery::new(&cfg, "");
         let now = Instant::now();
         let prev_cwnd = r.cwnd();
 

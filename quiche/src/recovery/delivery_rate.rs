@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn rate_check() {
         let config = Config::new(0xbabababa).unwrap();
-        let mut r = Recovery::new(&config);
+        let mut r = Recovery::new(&config, "");
 
         let now = Instant::now();
         let mss = r.max_datagram_size();
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn app_limited_cwnd_full() {
         let config = Config::new(0xbabababa).unwrap();
-        let mut r = Recovery::new(&config);
+        let mut r = Recovery::new(&config, "");
 
         let now = Instant::now();
         let mss = r.max_datagram_size();
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn app_limited_check() {
         let config = Config::new(0xbabababa).unwrap();
-        let mut r = Recovery::new(&config);
+        let mut r = Recovery::new(&config, "");
 
         let now = Instant::now();
         let mss = r.max_datagram_size();
