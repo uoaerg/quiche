@@ -137,7 +137,7 @@ impl Rate {
                 .max(self.rate_sample.ack_elapsed);
 
             self.rate_sample.delivered =
-                self.delivered - self.rate_sample.prior_delivered;
+                self.delivered.saturating_sub(self.rate_sample.prior_delivered);
             self.rate_sample.interval = interval;
 
             if interval < min_rtt {

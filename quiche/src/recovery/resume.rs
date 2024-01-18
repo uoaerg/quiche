@@ -119,7 +119,12 @@ impl Resume {
         }
 
         if self.cr_state == CrState::Reconnaissance {
-            let jump = (self.previous_cwnd / 2) - cwnd;
+            let jump = (self.previous_cwnd / 2).saturating_sub(cwnd);
+
+            if jump == 0 {
+                self.cr_state = CrState::Normal;
+                return 0;
+            }
 
             // Confirm RTT is similar to that of the previous connection
             if rtt_sample <= self.previous_rtt / 2 || rtt_sample >= self.previous_rtt * 10 {
