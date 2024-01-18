@@ -572,7 +572,7 @@ fn on_packets_acked(
     for p in packets {
         r.bbr2_state.prior_bytes_in_flight = r.bytes_in_flight;
 
-        per_ack::bbr2_update_model_and_state(r, &p, now);
+        per_ack::bbr2_update_model_and_state(r, p, now);
 
         if r.bytes_in_flight < p.size {
             trace!("BBR2 on_packets_acked subtraction overflow");

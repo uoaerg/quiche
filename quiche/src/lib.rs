@@ -2124,15 +2124,15 @@ impl Connection {
     /// This must only be called immediately after creating a connection; that
     /// is, before any packet is sent or received.
     #[inline]
-    pub fn set_token(&mut self, token: &[u8]) -> () {
+    pub fn set_token(&mut self, token: &[u8]) {
         self.token.replace(token.to_vec());
     }
 
     /// Sends an address validation token in a NEW_TOKEN frame
     #[inline]
-    pub fn send_new_token(&mut self, token: &[u8]) -> () {
+    pub fn send_new_token(&mut self, token: &[u8]) {
         if self.is_closed() || self.is_draining() {
-            return ();
+            return;
         }
         self.new_token.replace(token.to_vec());
     }
@@ -7955,11 +7955,7 @@ impl TransportParams {
                         return Err(Error::InvalidTransportParam);
                     }
 
-                    tp.bdp_tokens = if bdp_tokens == 0 {
-                        false
-                    } else {
-                        true
-                    };
+                    tp.bdp_tokens = bdp_tokens != 0;
                 }
 
                 // Ignore unknown parameters.

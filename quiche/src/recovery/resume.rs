@@ -4,8 +4,9 @@ use crate::recovery::Acked;
 const CR_EVENT_MAXIMUM_GAP: Duration = Duration::from_secs(60);
 
 // No observe state as that always applies to the previous connection and never the current connection
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 pub enum CrState {
+    #[default]
     Reconnaissance,
     // The next two states store the first packet sent when entering that state
     Unvalidated(u64),
@@ -13,10 +14,6 @@ pub enum CrState {
     // Stores the last packet sent during the Unvalidated Phase
     SafeRetreat(u64),
     Normal,
-}
-
-impl Default for CrState {
-    fn default() -> Self { CrState::Reconnaissance }
 }
 
 pub struct Resume {
@@ -44,7 +41,7 @@ impl Resume {
         Self {
             trace_id: trace_id.to_string(),
             enabled: false,
-            cr_state: CrState::Reconnaissance,
+            cr_state: CrState::default(),
             previous_rtt: Duration::ZERO,
             previous_cwnd: 0,
             pipesize: 0,
@@ -59,7 +56,7 @@ impl Resume {
     }
 
     pub fn reset(&mut self) {
-        self.cr_state = CrState::Reconnaissance;
+        self.cr_state = CrState::default();
         self.pipesize = 0;
     }
 

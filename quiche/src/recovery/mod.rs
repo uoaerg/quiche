@@ -1042,10 +1042,10 @@ impl Recovery {
     }
 
     fn on_packets_acked(
-        &mut self, acked: &Vec<Acked>, epoch: packet::Epoch, now: Instant,
+        &mut self, acked: &[Acked], epoch: packet::Epoch, now: Instant,
     ) {
         // Update delivery rate sample per acked packet.
-        for pkt in acked.iter() {
+        for pkt in acked {
             self.delivery_rate.update_rate_sample(pkt, now);
         }
 
