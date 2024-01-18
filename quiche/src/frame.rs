@@ -221,8 +221,15 @@ impl Frame {
                 Frame::Crypto { data }
             },
 
-            0x07 => Frame::NewToken {
-                token: b.get_bytes_with_varint_length()?.to_vec(),
+            0x07 => {
+                let len = b.get_varint()?;
+                if len == 0 {
+                    return Err(Error::InvalidFrame);
+                }
+
+                Frame::NewToken {
+                    token: b.get_bytes(len as usize)?.to_vec(),
+                }
             },
 
             0x08..=0x0f => parse_stream_frame(frame_type, b)?,
@@ -261,15 +268,25 @@ impl Frame {
                 limit: b.get_varint()?,
             },
 
-            0x18 => Frame::NewConnectionId {
-                seq_num: b.get_varint()?,
-                retire_prior_to: b.get_varint()?,
-                conn_id: b.get_bytes_with_u8_length()?.to_vec(),
-                reset_token: b
-                    .get_bytes(16)?
-                    .buf()
-                    .try_into()
-                    .map_err(|_| Error::BufferTooShort)?,
+            0x18 => {
+                let seq_num = b.get_varint()?;
+                let retire_prior_to = b.get_varint()?;
+                let conn_id_len = b.get_u8()?;
+
+                if !(1..=packet::MAX_CID_LEN).contains(&conn_id_len) {
+                    return Err(Error::InvalidFrame);
+                }
+
+                Frame::NewConnectionId {
+                    seq_num,
+                    retire_prior_to,
+                    conn_id: b.get_bytes(conn_id_len as usize)?.to_vec(),
+                    reset_token: b
+                        .get_bytes(16)?
+                        .buf()
+                        .try_into()
+                        .map_err(|_| Error::BufferTooShort)?,
+                }
             },
 
             0x19 => Frame::RetireConnectionId {
@@ -1049,7 +1066,7 @@ impl std::fmt::Debug for Frame {
             },
 
             Frame::NewToken { token } => {
-                write!(f, "NEW_TOKEN token={token:02x?}")?;
+                write!(f, "NEW_TOKEN len={}", token.len())?;
             },
 
             Frame::Stream { stream_id, data } => {
