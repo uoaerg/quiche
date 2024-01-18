@@ -2149,6 +2149,10 @@ impl Connection {
         self.received_tokens.pop_front()
     }
 
+    /// Configures careful resume on the active path with stored CC parameters.
+    /// Careful resume will not be enabled until this function is called, even if [`enable_resume()`] is called.
+    ///
+    /// [`enable_resume()`]: struct.Config.html#method.enable_resume
     pub fn setup_careful_resume(&mut self, previous_rtt: Duration, previous_cwnd: usize) -> Result<()> {
         self.paths.get_active_mut()?.recovery
             .setup_careful_resume(previous_rtt, previous_cwnd);
@@ -7598,12 +7602,16 @@ impl Connection {
         self.closed = true;
     }
 
-    fn update_cr_event(&mut self, event: recovery::CREvent) {
+    fn update_cr_event(&mut self, event: CREvent) {
         self.cr_event.replace(event);
     }
 
-    /// Returns a new set of congestion control parameters to be used for Careful Resume, if availbale
-    pub fn cr_event(&mut self) -> Option<recovery::CREvent> {
+    /// Returns a [`CREvent`], or None when there are no events to report. Please refer to [`CREvent`] for event details.
+    ///
+    /// Once reported events will not be reported again by calling this method again, until a new event is available.
+    ///
+    /// [`CREvent`]: struct.CREvent.html
+    pub fn cr_event_next(&mut self) -> Option<CREvent> {
         self.cr_event.take()
     }
 }

@@ -262,9 +262,12 @@ impl CRMetrics {
     }
 }
 
+/// An update in Careful Resume observed parameters to be stored/transmitted for future connections
 #[derive(Clone, Copy, Debug)]
 pub struct CREvent {
+    /// A windowed minimum round-trip-time observation
     pub min_rtt: Duration,
+    /// The current congestion window, in bytes
     pub cwnd: usize,
 }
 
