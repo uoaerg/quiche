@@ -1142,11 +1142,14 @@ impl Recovery {
             bytes_in_flight: self.bytes_in_flight as u64,
             ssthresh: self.ssthresh as u64,
             pacing_rate: self.pacer.rate(),
-            cr_mark: self.resume.get_cr_mark(),
-            cr_state: self.resume.get_cr_state(),
         };
 
         self.qlog_metrics.maybe_update(qlog_metrics)
+    }
+
+    #[cfg(feature = "qlog")]
+    pub fn maybe_cr_qlog(&mut self) -> Option<EventData> {
+        self.resume.maybe_qlog(self.cwnd(), self.ssthresh)
     }
 
     pub fn send_quantum(&self) -> usize {
@@ -1407,8 +1410,6 @@ struct QlogMetrics {
     bytes_in_flight: u64,
     ssthresh: u64,
     pacing_rate: u64,
-    cr_mark: u64,
-    cr_state: u64,
 }
 
 #[cfg(feature = "qlog")]
@@ -1486,22 +1487,6 @@ impl QlogMetrics {
             None
         };
 
-        let new_cr_mark = if self.cr_mark != latest.cr_mark {
-            self.cr_mark = latest.cr_mark;
-            emit_event = true;
-            Some(latest.cr_mark)
-        } else {
-            None
-        };
-
-        let new_cr_state = if self.cr_state != latest.cr_state {
-            self.cr_state = latest.cr_state;
-            emit_event = true;
-            Some(latest.cr_state)
-        } else {
-            None
-        };
-
         if emit_event {
             // QVis can't use all these fields and they can be large.
             return Some(EventData::MetricsUpdated(
@@ -1516,9 +1501,6 @@ impl QlogMetrics {
                     ssthresh: new_ssthresh,
                     packets_in_flight: None,
                     pacing_rate: new_pacing_rate,
-                    cr_mark: new_cr_mark,
-                    cr_state: new_cr_state,
-
                 },
             ));
         }

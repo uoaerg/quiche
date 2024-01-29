@@ -1,4 +1,6 @@
 use std::time::{Duration, Instant};
+use qlog::events::EventData;
+use qlog::events::resume::*;
 use crate::recovery::Acked;
 
 const CR_EVENT_MAXIMUM_GAP: Duration = Duration::from_secs(60);
@@ -23,6 +25,11 @@ pub struct Resume {
     previous_rtt: Duration,
     previous_cwnd: usize,
     pipesize: usize,
+
+    #[cfg(feature = "qlog")]
+    qlog_metrics: QlogMetrics,
+    #[cfg(feature = "qlog")]
+    last_trigger: Option<CarefulResumeTrigger>,
 }
 
 impl std::fmt::Debug for Resume {
@@ -45,6 +52,11 @@ impl Resume {
             previous_rtt: Duration::ZERO,
             previous_cwnd: 0,
             pipesize: 0,
+
+            #[cfg(feature = "qlog")]
+            qlog_metrics: QlogMetrics::default(),
+            #[cfg(feature = "qlog")]
+            last_trigger: None
         }
     }
 
@@ -68,6 +80,14 @@ impl Resume {
         }
     }
 
+    #[inline]
+    fn change_state(&mut self, state: CrState, trigger: CarefulResumeTrigger) {
+        self.cr_state = state;
+        #[cfg(feature = "qlog")] {
+            self.last_trigger = Some(trigger);
+        }
+    }
+
     // Returns (new_cwnd, new_ssthresh), both optional
     pub fn process_ack(
         &mut self, largest_pkt_sent: u64, packet: &Acked, flightsize: usize
@@ -78,7 +98,7 @@ impl Resume {
                 if packet.pkt_num >= first_packet {
                     trace!("{} entering careful resume validating phase", self.trace_id);
                     // Store the last packet number that was sent in the Unvalidated Phase
-                    self.cr_state = CrState::Validating(largest_pkt_sent);
+                    self.change_state(CrState::Validating(largest_pkt_sent), CarefulResumeTrigger::CrMarkAcknowledged);
                     (Some(flightsize), None)
                 } else {
                     (None, None)
@@ -88,14 +108,14 @@ impl Resume {
                 self.pipesize += packet.size;
                 if packet.pkt_num >= last_packet {
                     trace!("{} careful resume complete", self.trace_id);
-                    self.cr_state = CrState::Normal;
+                    self.change_state(CrState::Normal, CarefulResumeTrigger::CrMarkAcknowledged);
                 }
                 (None, None)
             }
             CrState::SafeRetreat(last_packet) => {
                 if packet.pkt_num >= last_packet {
                     trace!("{} careful resume complete", self.trace_id);
-                    self.cr_state = CrState::Normal;
+                    self.change_state(CrState::Normal, CarefulResumeTrigger::ExitRecovery);
                     (None, Some(self.pipesize))
                 } else {
                     self.pipesize += packet.size;
@@ -119,7 +139,7 @@ impl Resume {
             let jump = (self.previous_cwnd / 2).saturating_sub(cwnd);
 
             if jump == 0 {
-                self.cr_state = CrState::Normal;
+                self.change_state(CrState::Normal, CarefulResumeTrigger::CwndLimited);
                 return 0;
             }
 
@@ -130,16 +150,16 @@ impl Resume {
                     rtt_sample={:?} previous_rtt={:?}",
                     self.trace_id, rtt_sample, self.previous_rtt
                 );
-                self.cr_state = CrState::Normal;
+                self.change_state(CrState::Normal, CarefulResumeTrigger::RttNotValidated);
                 return 0;
             }
 
             // Store the first packet number that was sent in the Unvalidated Phase
             trace!("{} entering careful resume unvalidated phase", self.trace_id);
-            self.cr_state = CrState::Unvalidated(largest_pkt_sent);
+            self.change_state(CrState::Unvalidated(largest_pkt_sent), CarefulResumeTrigger::CwndLimited);
             self.pipesize = cwnd;
-            // we return the jump window, CC code handles the increase in cwnd
-            return (self.previous_cwnd / 2) - cwnd;
+            // we return the jump in window, CC code handles the increase in cwnd
+            return jump;
         }
 
         0
@@ -149,19 +169,24 @@ impl Resume {
         match self.cr_state {
             CrState::Unvalidated(_) => {
                 trace!("{} congestion during unvalidated phase", self.trace_id);
+
                 // TODO: mark used CR parameters as invalid for future connections
-                self.cr_state = CrState::SafeRetreat(largest_pkt_sent);
+
+                self.change_state(CrState::SafeRetreat(largest_pkt_sent), CarefulResumeTrigger::PacketLoss);
                 self.pipesize / 2
             }
             CrState::Validating(p) => {
                 trace!("{} congestion during validating phase", self.trace_id);
+
                 // TODO: mark used CR parameters as invalid for future connections
-                self.cr_state = CrState::SafeRetreat(p);
+
+                self.change_state(CrState::SafeRetreat(p), CarefulResumeTrigger::PacketLoss);
                 self.pipesize / 2
             }
             CrState::Reconnaissance => {
                 trace!("{} congestion during reconnaissance - abandoning careful resume", self.trace_id);
-                self.cr_state = CrState::Normal;
+
+                self.change_state(CrState::Normal, CarefulResumeTrigger::PacketLoss);
                 0
             }
             _ => {
@@ -170,21 +195,19 @@ impl Resume {
         }
     }
 
-    pub fn get_cr_mark(&self) -> u64 {
-        match self.cr_state {
-            CrState::Reconnaissance | CrState::Normal => 0,
-            CrState::Unvalidated(m) | CrState::Validating(m) | CrState::SafeRetreat(m) => m,
-        }
-    }
+    #[cfg(feature = "qlog")]
+    pub fn maybe_qlog(&mut self, cwnd: usize, ssthresh: usize) -> Option<EventData> {
+        let qlog_metrics = QlogMetrics {
+            state: Some(self.cr_state),
+            pipesize: self.pipesize as u64,
+            cwnd: cwnd as u64,
+            ssthresh: ssthresh as u64,
+            trigger: self.last_trigger,
+            previous_rtt: self.previous_rtt,
+            previous_cwnd: self.previous_cwnd as u64,
+        };
 
-    pub fn get_cr_state(&self) -> u64 {
-        match self.cr_state {
-            CrState::Reconnaissance => { 1 }
-            CrState::Unvalidated(_) => { 2 }
-            CrState::Validating(_) => { 3 }
-            CrState::Normal => { 4 }
-            CrState::SafeRetreat(_) => { 100 }
-        }
+        self.qlog_metrics.maybe_update(qlog_metrics)
     }
 }
 
@@ -271,6 +294,77 @@ pub struct CREvent {
     pub cwnd: usize,
 }
 
+#[derive(Default)]
+#[cfg(feature = "qlog")]
+struct QlogMetrics {
+    state: Option<CrState>,
+    pipesize: u64,
+    cwnd: u64,
+    ssthresh: u64,
+    trigger: Option<CarefulResumeTrigger>,
+    previous_rtt: Duration,
+    previous_cwnd: u64,
+}
+
+#[cfg(feature = "qlog")]
+impl QlogMetrics {
+    fn map_state(state: CrState) -> CarefulResumePhase {
+        match state {
+            CrState::Reconnaissance => CarefulResumePhase::Reconnaissance,
+            CrState::Unvalidated(_) => CarefulResumePhase::Unvalidated,
+            CrState::Validating(_) => CarefulResumePhase::Validating,
+            CrState::SafeRetreat(_) => CarefulResumePhase::SafeRetreat,
+            CrState::Normal => CarefulResumePhase::Normal,
+        }
+    }
+
+    fn map_cr_mark(state: CrState) -> u64 {
+        match state {
+            CrState::Reconnaissance | CrState::Normal => 0,
+            CrState::Unvalidated(m) | CrState::Validating(m) | CrState::SafeRetreat(m) => m,
+        }
+    }
+
+    fn maybe_update(&mut self, latest: Self) -> Option<EventData> {
+        if let Some(new_state) = latest.state {
+            if self.state != Some(new_state) {
+                let old_state = self.state;
+                self.state = Some(new_state);
+                self.pipesize = latest.pipesize;
+                self.trigger = latest.trigger;
+                self.cwnd = latest.cwnd;
+                self.ssthresh = latest.ssthresh;
+                self.previous_rtt = latest.previous_rtt;
+                self.previous_cwnd = latest.previous_cwnd;
+
+                Some(EventData::CarefulResumePhaseUpdated(CarefulResumePhaseUpdated {
+                    old: old_state.map(Self::map_state),
+                    new: Self::map_state(new_state),
+                    state_data: CarefulResumeStateParameters {
+                        pipesize: latest.pipesize,
+                        cr_mark: Self::map_cr_mark(new_state),
+                        cwnd: Some(latest.cwnd),
+                        ssthresh: Some(latest.ssthresh),
+                    },
+                    restored_data: if latest.previous_rtt != Duration::ZERO || latest.previous_cwnd != 0 {
+                        Some(CarefulResumeRestoredParameters {
+                            previous_cwnd: latest.previous_cwnd,
+                            previous_rtt: latest.previous_rtt.as_secs_f32() * 1000.0
+                        })
+                    } else {
+                        None
+                    },
+                    trigger: latest.trigger,
+                }))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,7 +403,9 @@ mod tests {
     fn valid_rtt() {
         let mut r = Resume::new("");
         r.setup(Duration::from_millis(50), 12_000);
-        r.send_packet(Duration::from_millis(60), 1_350, 10, false);
+
+        let jump = r.send_packet(Duration::from_millis(60), 1_350, 10, false);
+        assert_eq!(jump, 4_650);
 
         assert_eq!(r.cr_state, CrState::Unvalidated(10));
         assert_eq!(r.pipesize, 1_350);

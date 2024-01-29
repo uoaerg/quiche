@@ -2899,6 +2899,9 @@ impl Connection {
             if let Some(ev_data) = recv_path.recovery.maybe_qlog() {
                 q.add_event_data_with_instant(ev_data, now).ok();
             }
+            if let Some(ev_data) = recv_path.recovery.maybe_cr_qlog() {
+                q.add_event_data_with_instant(ev_data, now).ok();
+            }
         });
 
         if recv_path.active() {
@@ -4456,6 +4459,9 @@ impl Connection {
             if let Some(ev_data) = path.recovery.maybe_qlog() {
                 q.add_event_data_with_instant(ev_data, now).ok();
             }
+            if let Some(ev_data) = path.recovery.maybe_cr_qlog() {
+                q.add_event_data_with_instant(ev_data, now).ok();
+            }
         });
 
         // Record sent packet size if we probe the path.
@@ -5739,6 +5745,9 @@ impl Connection {
 
                     qlog_with_type!(QLOG_METRICS, self.qlog, q, {
                         if let Some(ev_data) = p.recovery.maybe_qlog() {
+                            q.add_event_data_with_instant(ev_data, now).ok();
+                        }
+                        if let Some(ev_data) = p.recovery.maybe_cr_qlog() {
                             q.add_event_data_with_instant(ev_data, now).ok();
                         }
                     });

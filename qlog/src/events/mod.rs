@@ -454,6 +454,11 @@ impl From<&EventData> for EventType {
                     RecoveryEventType::MarkedForRetransmit,
                 ),
 
+            EventData::CarefulResumePhaseUpdated { .. } =>
+                EventType::RecoveryEventType(
+                    RecoveryEventType::CarefulResumePhaseUpdated,
+                ),
+
             EventData::H3ParametersSet { .. } =>
                 EventType::Http3EventType(Http3EventType::ParametersSet),
             EventData::H3ParametersRestored { .. } =>
@@ -616,6 +621,9 @@ pub enum EventData {
     #[serde(rename = "recovery:marked_for_retransmit")]
     MarkedForRetransmit(quic::MarkedForRetransmit),
 
+    #[serde(rename = "recovery:careful_resume_phase_updated")]
+    CarefulResumePhaseUpdated(resume::CarefulResumePhaseUpdated),
+
     // HTTP/3
     #[serde(rename = "http:parameters_set")]
     H3ParametersSet(h3::H3ParametersSet),
@@ -753,3 +761,4 @@ pub mod connectivity;
 pub mod h3;
 pub mod qpack;
 pub mod security;
+pub mod resume;
