@@ -578,7 +578,7 @@ impl Recovery {
                     lost: unacked.lost,
                 });
 
-                trace!("{} packet newly acked {}", trace_id, unacked.pkt_num);
+                trace!("{} packet newly acked {}, size={}", trace_id, unacked.pkt_num, unacked.size);
             }
         }
 
@@ -1042,10 +1042,10 @@ impl Recovery {
     }
 
     fn on_packets_acked(
-        &mut self, acked: &[Acked], epoch: packet::Epoch, now: Instant,
+        &mut self, acked: &mut Vec<Acked>, epoch: packet::Epoch, now: Instant,
     ) {
         // Update delivery rate sample per acked packet.
-        for pkt in acked {
+        for pkt in acked.iter() {
             self.delivery_rate.update_rate_sample(pkt, now);
         }
 
@@ -1205,7 +1205,7 @@ pub struct CongestionControlOps {
 
     pub on_packets_acked: fn(
         r: &mut Recovery,
-        packets: &[Acked],
+        packets: &mut Vec<Acked>,
         epoch: packet::Epoch,
         now: Instant,
     ),

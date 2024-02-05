@@ -203,11 +203,11 @@ fn on_packet_sent(r: &mut Recovery, sent_bytes: usize, now: Instant) {
 }
 
 fn on_packets_acked(
-    r: &mut Recovery, packets: &[Acked], epoch: packet::Epoch,
+    r: &mut Recovery, packets: &mut Vec<Acked>, epoch: packet::Epoch,
     now: Instant,
 ) {
-    for pkt in packets {
-        on_packet_acked(r, pkt, epoch, now);
+    for pkt in packets.drain(..) {
+        on_packet_acked(r, &pkt, epoch, now);
     }
 }
 

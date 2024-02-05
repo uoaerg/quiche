@@ -296,14 +296,14 @@ fn on_packet_sent(r: &mut Recovery, sent_bytes: usize, _now: Instant) {
 }
 
 fn on_packets_acked(
-    r: &mut Recovery, packets: &[Acked], _epoch: packet::Epoch,
+    r: &mut Recovery, packets: &mut Vec<Acked>, _epoch: packet::Epoch,
     now: Instant,
 ) {
     r.bbr_state.newly_acked_bytes =
-        packets.iter().fold(0, |acked_bytes, p| {
+        packets.drain(..).fold(0, |acked_bytes, p| {
             r.bbr_state.prior_bytes_in_flight = r.bytes_in_flight;
 
-            per_ack::bbr_update_model_and_state(r, p, now);
+            per_ack::bbr_update_model_and_state(r, &p, now);
 
             r.bytes_in_flight = r.bytes_in_flight.saturating_sub(p.size);
 

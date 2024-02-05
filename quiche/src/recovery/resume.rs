@@ -522,7 +522,6 @@ mod tests {
         let mut now = Instant::now();
 
         r.setup_careful_resume(Duration::from_millis(30), 120_000);
-
         assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
 
         for i in 0..4 {
