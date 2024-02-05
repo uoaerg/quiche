@@ -272,6 +272,8 @@ impl From<EventType> for EventImportance {
             EventType::RecoveryEventType(
                 RecoveryEventType::MarkedForRetransmit,
             ) => EventImportance::Extra,
+            EventType::RecoveryEventType(RecoveryEventType::CarefulResumePhaseUpdated) =>
+                EventImportance::Base,
 
             EventType::Http3EventType(Http3EventType::ParametersSet) =>
                 EventImportance::Base,
