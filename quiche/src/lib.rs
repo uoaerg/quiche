@@ -3357,6 +3357,8 @@ impl Connection {
                 break;
             }
         }
+        
+        self.update_tx_cap();
 
         if done == 0 {
             self.last_tx_data = self.tx_data;
