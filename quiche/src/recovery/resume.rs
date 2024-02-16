@@ -96,10 +96,16 @@ impl Resume {
             CrState::Unvalidated(first_packet) => {
                 self.pipesize += packet.size;
                 if packet.pkt_num >= first_packet {
-                    trace!("{} entering careful resume validating phase", self.trace_id);
-                    // Store the last packet number that was sent in the Unvalidated Phase
-                    self.change_state(CrState::Validating(largest_pkt_sent), CarefulResumeTrigger::CrMarkAcknowledged);
-                    (Some(flightsize), None)
+                    if flightsize <= self.pipesize {
+                        trace!("{} careful resume complete", self.trace_id);
+                        self.change_state(CrState::Normal, CarefulResumeTrigger::CrMarkAcknowledged);
+                        (Some(self.pipesize), None)
+                    } else {
+                        trace!("{} entering careful resume validating phase", self.trace_id);
+                        // Store the last packet number that was sent in the Unvalidated Phase
+                        self.change_state(CrState::Validating(largest_pkt_sent), CarefulResumeTrigger::CrMarkAcknowledged);
+                        (Some(flightsize), None)
+                    }
                 } else {
                     (None, None)
                 }
