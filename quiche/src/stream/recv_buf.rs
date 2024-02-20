@@ -70,11 +70,12 @@ pub struct RecvBuf {
 
 impl RecvBuf {
     /// Creates a new receive buffer.
-    pub fn new(max_data: u64, max_window: u64) -> RecvBuf {
+    pub fn new<W: Into<Option<u64>>>(max_data: u64, max_window: u64, window: W) -> RecvBuf {
+        let window = window.into();
         RecvBuf {
             flow_control: flowcontrol::FlowControl::new(
                 max_data,
-                cmp::min(max_data, DEFAULT_STREAM_WINDOW),
+                window.unwrap_or_else(|| cmp::min(max_data, DEFAULT_STREAM_WINDOW)),
                 max_window,
             ),
             ..RecvBuf::default()

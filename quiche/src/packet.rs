@@ -911,6 +911,7 @@ impl PktNumSpace {
                 true,
                 true,
                 stream::MAX_STREAM_WINDOW,
+                stream::MAX_STREAM_WINDOW,
             ),
         }
     }
@@ -922,6 +923,7 @@ impl PktNumSpace {
             u64::MAX,
             true,
             true,
+            stream::MAX_STREAM_WINDOW,
             stream::MAX_STREAM_WINDOW,
         );
 

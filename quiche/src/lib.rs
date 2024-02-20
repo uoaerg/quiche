@@ -1491,6 +1491,8 @@ pub struct Connection {
     stopped_stream_remote_count: u64,
 
     cr_event: Option<recovery::CREvent>,
+
+    default_stream_window: Option<u64>
 }
 
 /// Creates a new server-side connection.
@@ -1939,6 +1941,8 @@ impl Connection {
             stopped_stream_remote_count: 0,
 
             cr_event: None,
+
+            default_stream_window: None,
         };
 
         if let Some(odcid) = odcid {
@@ -2165,6 +2169,10 @@ impl Connection {
         self.paths.get_active_mut()?.recovery
             .setup_careful_resume(previous_rtt, previous_cwnd);
         Ok(())
+    }
+
+    pub fn setup_default_steam_window(&mut self, window: u64) {
+        self.default_stream_window = Some(window);
     }
 
     /// Processes QUIC packets received from the peer.
@@ -6765,7 +6773,7 @@ impl Connection {
     /// Returns the mutable stream with the given ID if it exists, or creates
     /// a new one otherwise.
     fn get_or_create_stream(
-        &mut self, id: u64, local: bool,
+        &mut self, id: u64, local: bool
     ) -> Result<&mut stream::Stream> {
         self.streams.get_or_create(
             id,
@@ -6773,6 +6781,7 @@ impl Connection {
             &self.peer_transport_params,
             local,
             self.is_server,
+            self.default_stream_window
         )
     }
 

@@ -202,9 +202,10 @@ impl StreamMap {
     /// This also takes care of enforcing both local and the peer's stream
     /// count limits. If one of these limits is violated, the `StreamLimit`
     /// error is returned.
-    pub(crate) fn get_or_create(
+    pub(crate) fn get_or_create<W: Into<Option<u64>>>(
         &mut self, id: u64, local_params: &crate::TransportParams,
         peer_params: &crate::TransportParams, local: bool, is_server: bool,
+        window: W,
     ) -> Result<&mut Stream> {
         let (stream, is_new_and_writable) = match self.streams.entry(id) {
             hash_map::Entry::Vacant(v) => {
@@ -305,6 +306,7 @@ impl StreamMap {
                     is_bidi(id),
                     local,
                     self.max_stream_window,
+                    window,
                 );
 
                 let is_writable = s.is_writable();
@@ -673,9 +675,9 @@ pub struct Stream {
 
 impl Stream {
     /// Creates a new stream with the given flow control limits.
-    pub fn new(
+    pub fn new<W: Into<Option<u64>>>(
         id: u64, max_rx_data: u64, max_tx_data: u64, bidi: bool, local: bool,
-        max_window: u64,
+        max_window: u64, window: W
     ) -> Stream {
         let priority_key = Arc::new(StreamPriorityKey {
             id,
@@ -683,7 +685,7 @@ impl Stream {
         });
 
         Stream {
-            recv: recv_buf::RecvBuf::new(max_rx_data, max_window),
+            recv: recv_buf::RecvBuf::new(max_rx_data, max_window, window),
             send: send_buf::SendBuf::new(max_tx_data),
             send_lowat: 1,
             bidi,
