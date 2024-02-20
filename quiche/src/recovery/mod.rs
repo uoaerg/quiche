@@ -162,6 +162,8 @@ pub struct Recovery {
 
     #[cfg(feature = "qlog")]
     qlog_metrics: QlogMetrics,
+    #[cfg(feature = "qlog")]
+    qlog_packet_loss: VecDeque<EventData>,
 
     // The maximum size of a data aggregate scheduled and
     // transmitted together.
@@ -302,6 +304,8 @@ impl Recovery {
 
             #[cfg(feature = "qlog")]
             qlog_metrics: QlogMetrics::default(),
+            #[cfg(feature = "qlog")]
+            qlog_packet_loss: VecDeque::new(),
 
             bbr_state: bbr::State::new(),
 
@@ -982,6 +986,34 @@ impl Recovery {
                         unacked.pkt_num,
                         epoch
                     );
+
+                    #[cfg(feature = "qlog")]
+                    {
+                        let trigger = if unacked.time_sent <= lost_send_time {
+                            qlog::events::quic::PacketLostTrigger::TimeThreshold
+                        } else {
+                            qlog::events::quic::PacketLostTrigger::ReorderingThreshold
+                        };
+
+                        self.qlog_packet_loss.push_front(EventData::PacketLost(
+                            qlog::events::quic::PacketLost {
+                                header: Some(qlog::events::quic::PacketHeader {
+                                    packet_type: qlog::events::quic::PacketType::Unknown,
+                                    packet_number: Some(unacked.pkt_num),
+                                    flags: None,
+                                    token: None,
+                                    length: Some(unacked.size as u16),
+                                    version: None,
+                                    scil: None,
+                                    dcil: None,
+                                    scid: None,
+                                    dcid: None,
+                                }),
+                                frames: Some(unacked.frames.iter().map(|f| f.to_qlog()).collect()),
+                                trigger: Some(trigger),
+                            },
+                        ))
+                    }
                 }
 
                 lost_packets += 1;
@@ -1150,6 +1182,11 @@ impl Recovery {
     #[cfg(feature = "qlog")]
     pub fn maybe_cr_qlog(&mut self) -> Option<EventData> {
         self.resume.maybe_qlog(self.cwnd(), self.ssthresh)
+    }
+
+    #[cfg(feature = "qlog")]
+    pub fn packet_loss_qlog(&mut self) -> std::collections::vec_deque::Drain<EventData> {
+        self.qlog_packet_loss.drain(..)
     }
 
     pub fn send_quantum(&self) -> usize {

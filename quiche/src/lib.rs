@@ -1715,6 +1715,14 @@ const QLOG_METRICS: EventType =
     EventType::RecoveryEventType(RecoveryEventType::MetricsUpdated);
 
 #[cfg(feature = "qlog")]
+const QLOG_CR_PHASE: EventType =
+    EventType::RecoveryEventType(RecoveryEventType::CarefulResumePhaseUpdated);
+
+#[cfg(feature = "qlog")]
+const QLOG_PACKET_LOST: EventType =
+    EventType::RecoveryEventType(RecoveryEventType::PacketLost);
+
+#[cfg(feature = "qlog")]
 struct QlogInfo {
     streamer: Option<qlog::streamer::QlogStreamer>,
     logged_peer_params: bool,
@@ -4461,6 +4469,8 @@ impl Connection {
             if let Some(ev_data) = path.recovery.maybe_qlog() {
                 q.add_event_data_with_instant(ev_data, now).ok();
             }
+        });
+        qlog_with_type!(QLOG_CR_PHASE, self.qlog, q, {
             if let Some(ev_data) = path.recovery.maybe_cr_qlog() {
                 q.add_event_data_with_instant(ev_data, now).ok();
             }
@@ -5745,10 +5755,17 @@ impl Connection {
                     self.lost_count += lost_packets;
                     self.lost_bytes += lost_bytes as u64;
 
+                    qlog_with_type!(QLOG_PACKET_LOST, self.qlog, q, {
+                        for ev_data in p.recovery.packet_loss_qlog() {
+                            q.add_event_data_with_instant(ev_data, now).ok();
+                        }
+                    });
                     qlog_with_type!(QLOG_METRICS, self.qlog, q, {
                         if let Some(ev_data) = p.recovery.maybe_qlog() {
                             q.add_event_data_with_instant(ev_data, now).ok();
                         }
+                    });
+                    qlog_with_type!(QLOG_CR_PHASE, self.qlog, q, {
                         if let Some(ev_data) = p.recovery.maybe_cr_qlog() {
                             q.add_event_data_with_instant(ev_data, now).ok();
                         }
@@ -6808,6 +6825,12 @@ impl Connection {
 
                     self.lost_count += lost_packets;
                     self.lost_bytes += lost_bytes as u64;
+
+                    qlog_with_type!(QLOG_PACKET_LOST, self.qlog, q, {
+                        for ev_data in p.recovery.packet_loss_qlog() {
+                            q.add_event_data_with_instant(ev_data, now).ok();
+                        }
+                    });
                 }
             },
 
@@ -7531,6 +7554,12 @@ impl Connection {
 
                 self.lost_count += lost_packets;
                 self.lost_bytes += lost_bytes as u64;
+
+                qlog_with_type!(QLOG_PACKET_LOST, self.qlog, q, {
+                    for ev_data in old_active_path.recovery.packet_loss_qlog() {
+                        q.add_event_data_with_instant(ev_data, now).ok();
+                    }
+                });
             }
         }
 
