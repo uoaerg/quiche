@@ -2171,7 +2171,7 @@ impl Connection {
         Ok(())
     }
 
-    pub fn setup_default_steam_window(&mut self, window: u64) {
+    pub fn setup_default_stream_window(&mut self, window: u64) {
         self.default_stream_window = Some(window);
     }
 
