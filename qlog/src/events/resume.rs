@@ -18,6 +18,7 @@ pub enum CarefulResumeTrigger {
     CwndLimited, // Trigger for moving to unvalidated
     CrMarkAcknowledged, // Trigger for moving to validating or normal
     RttNotValidated, // Trigger for moving to normal, when CR not allowed
+    #[serde(rename = "ECN_CE")]
     EcnCe, // Trigger for moving to safe retreat.
     ExitRecovery, // Trigger for moving to normal 1rtt after a congestion event
 }
@@ -37,13 +38,13 @@ pub enum CarefulResumePhase {
 pub struct CarefulResumeStateParameters {
     pub pipesize: u64,
     pub cr_mark: u64,
-    pub cwnd: Option<u64>,
+    pub congestion_window: Option<u64>,
     pub ssthresh: Option<u64>,
 }
 
 #[serde_with::skip_serializing_none]
 #[derive(Serialize, Deserialize, Copy, Clone, PartialEq, Debug)]
 pub struct CarefulResumeRestoredParameters {
-    pub previous_cwnd: u64,
+    pub previous_congestion_window: u64,
     pub previous_rtt: f32,
 }
