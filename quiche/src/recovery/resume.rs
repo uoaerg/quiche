@@ -349,12 +349,12 @@ impl QlogMetrics {
                     state_data: CarefulResumeStateParameters {
                         pipesize: latest.pipesize,
                         cr_mark: Self::map_cr_mark(new_state),
-                        cwnd: Some(latest.cwnd),
+                        congestion_window: Some(latest.cwnd),
                         ssthresh: Some(latest.ssthresh),
                     },
                     restored_data: if latest.previous_rtt != Duration::ZERO || latest.previous_cwnd != 0 {
                         Some(CarefulResumeRestoredParameters {
-                            previous_cwnd: latest.previous_cwnd,
+                            previous_congestion_window: latest.previous_cwnd,
                             previous_rtt: latest.previous_rtt.as_secs_f32() * 1000.0
                         })
                     } else {
