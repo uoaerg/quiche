@@ -994,8 +994,6 @@ impl PktNumWindow {
 mod tests {
     use super::*;
 
-    use crate::crypto;
-
     #[test]
     fn retry() {
         let hdr = Header {
