@@ -2913,10 +2913,12 @@ impl Connection {
         });
 
         let recv_path = self.paths.get_mut(recv_pid)?;
-        qlog_with_type!(QLOG_PACKET_RX, self.qlog, q, {
+        qlog_with_type!(QLOG_METRICS, self.qlog, q, {
             if let Some(ev_data) = recv_path.recovery.maybe_qlog() {
                 q.add_event_data_with_instant(ev_data, now).ok();
             }
+        });
+        qlog_with_type!(QLOG_CR_PHASE, self.qlog, q, {
             if let Some(ev_data) = recv_path.recovery.maybe_cr_qlog() {
                 q.add_event_data_with_instant(ev_data, now).ok();
             }
@@ -4911,6 +4913,21 @@ impl Connection {
 
         self.streams
             .update_priority(&old_priority_key, &new_priority_key);
+
+        Ok(())
+    }
+
+    pub fn stream_max_data(
+        &mut self, stream_id: u64, max_data: u64
+    ) -> Result<()> {
+        let stream = match self.get_or_create_stream(stream_id, true) {
+            Ok(v) => v,
+            Err(Error::Done) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+
+        stream.recv.set_max_data(max_data, time::Instant::now());
+        self.streams.insert_almost_full(stream_id);
 
         Ok(())
     }

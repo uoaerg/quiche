@@ -97,6 +97,11 @@ impl FlowControl {
         self.consumed + self.window
     }
 
+    pub fn set_max_data(&mut self, max_data: u64, now: Instant) {
+        self.max_data = max_data;
+        self.last_update = Some(now);
+    }
+
     /// Commits the new max_data limit.
     pub fn update_max_data(&mut self, now: Instant) {
         self.max_data = self.max_data_next();

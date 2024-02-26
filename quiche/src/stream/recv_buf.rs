@@ -287,6 +287,11 @@ impl RecvBuf {
         Ok(max_data_delta as usize)
     }
 
+    /// Sets a new max data limit value
+    pub fn set_max_data(&mut self, max_data: u64, now: time::Instant) {
+        self.flow_control.set_max_data(max_data, now);
+    }
+
     /// Commits the new max_data limit.
     pub fn update_max_data(&mut self, now: time::Instant) {
         self.flow_control.update_max_data(now);
