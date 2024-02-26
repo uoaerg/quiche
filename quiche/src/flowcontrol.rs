@@ -98,8 +98,10 @@ impl FlowControl {
     }
 
     pub fn set_max_data(&mut self, max_data: u64, now: Instant) {
-        self.max_data = max_data;
-        self.last_update = Some(now);
+        if self.max_data < max_data {
+            self.max_data = max_data;
+            self.last_update = Some(now);
+        }
     }
 
     /// Commits the new max_data limit.
