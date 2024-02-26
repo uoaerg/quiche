@@ -2672,7 +2672,9 @@ impl Connection {
 
         if hdr.ty == Type::Initial {
             if let Some(token) = &hdr.token {
-                self.peer_token.replace(token.clone());
+                if token.len() != 0 {
+                    self.peer_token.replace(token.clone());
+                }
             }
         }
 
