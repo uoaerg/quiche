@@ -3868,6 +3868,30 @@ impl Connection {
                 }
             }
 
+            for stream_id in self.streams.force_update() {
+                let stream = match self.streams.get_mut(stream_id) {
+                    Some(v) => v,
+                    None => {
+                        self.streams.remove_force_update(stream_id);
+                        continue;
+                    },
+                };
+
+                let frame = frame::Frame::MaxStreamData {
+                    stream_id,
+                    max: stream.recv.max_data()
+                };
+
+                if push_frame_to_pkt!(b, frames, frame, left) {
+                    self.streams.remove_force_update(stream_id);
+
+                    ack_eliciting = true;
+                    in_flight = true;
+
+                    self.almost_full = true;
+                }
+            }
+
             // Create MAX_DATA frame as needed.
             if self.almost_full &&
                 flow_control.max_data() < flow_control.max_data_next()
@@ -4926,9 +4950,8 @@ impl Connection {
             Err(e) => return Err(e),
         };
 
-        if stream.recv.set_max_data(max_data, time::Instant::now()) {
-            self.streams.insert_almost_full(stream_id);
-        }
+        stream.recv.set_max_data(max_data, time::Instant::now());
+        self.streams.insert_force_update(stream_id);
 
         Ok(())
     }

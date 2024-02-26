@@ -143,6 +143,7 @@ pub struct StreamMap {
     /// generate a `StreamIter` of streams without having to iterate over the
     /// full list of streams.
     almost_full: StreamIdHashSet,
+    force_update: StreamIdHashSet,
 
     /// Set of stream IDs corresponding to streams that are blocked. The value
     /// of the map elements represents the offset of the stream at which the
@@ -437,6 +438,13 @@ impl StreamMap {
         self.almost_full.remove(&stream_id);
     }
 
+    pub fn insert_force_update(&mut self, stream_id: u64) {
+        self.force_update.insert(stream_id);
+    }
+    pub fn remove_force_update(&mut self, stream_id: u64) {
+        self.force_update.remove(&stream_id);
+    }
+
     /// Adds the stream ID to the blocked streams set with the
     /// given offset value.
     ///
@@ -572,6 +580,9 @@ impl StreamMap {
     /// Creates an iterator over streams that need to send MAX_STREAM_DATA.
     pub fn almost_full(&self) -> StreamIter {
         StreamIter::from(&self.almost_full)
+    }
+    pub fn force_update(&self) -> StreamIter {
+        StreamIter::from(&self.force_update)
     }
 
     /// Creates an iterator over streams that need to send STREAM_DATA_BLOCKED.
