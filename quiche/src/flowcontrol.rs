@@ -97,10 +97,13 @@ impl FlowControl {
         self.consumed + self.window
     }
 
-    pub fn set_max_data(&mut self, max_data: u64, now: Instant) {
+    pub fn set_max_data(&mut self, max_data: u64, now: Instant) -> bool {
         if self.max_data < max_data {
             self.max_data = max_data;
             self.last_update = Some(now);
+            true
+        } else {
+            false
         }
     }
 

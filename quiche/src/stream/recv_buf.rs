@@ -288,8 +288,8 @@ impl RecvBuf {
     }
 
     /// Sets a new max data limit value
-    pub fn set_max_data(&mut self, max_data: u64, now: time::Instant) {
-        self.flow_control.set_max_data(max_data, now);
+    pub fn set_max_data(&mut self, max_data: u64, now: time::Instant) -> bool {
+        self.flow_control.set_max_data(max_data, now)
     }
 
     /// Commits the new max_data limit.

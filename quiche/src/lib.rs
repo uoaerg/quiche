@@ -4926,8 +4926,9 @@ impl Connection {
             Err(e) => return Err(e),
         };
 
-        stream.recv.set_max_data(max_data, time::Instant::now());
-        self.streams.insert_almost_full(stream_id);
+        if stream.recv.set_max_data(max_data, time::Instant::now()) {
+            self.streams.insert_almost_full(stream_id);
+        }
 
         Ok(())
     }
