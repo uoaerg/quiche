@@ -495,6 +495,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             has_data: false,
+            pmtud: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
@@ -547,6 +548,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             has_data: false,
+            pmtud: false,
         };
 
         // Send initcwnd full MSS packets to become no longer app limited
@@ -626,6 +628,7 @@ mod tests {
             has_data: false,
             tx_in_flight: 0,
             lost: 0,
+            pmtud: false,
         };
 
         r.congestion_event(
@@ -670,6 +673,7 @@ mod tests {
             has_data: false,
             tx_in_flight: 0,
             lost: 0,
+            pmtud: false,
         };
 
         // Trigger congestion event to update ssthresh
@@ -746,6 +750,7 @@ mod tests {
             has_data: false,
             tx_in_flight: 0,
             lost: 0,
+            pmtud: false,
         };
 
         r.congestion_event(
@@ -811,6 +816,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             has_data: false,
+            pmtud: false,
         };
 
         // 1st round.
@@ -967,6 +973,7 @@ mod tests {
             tx_in_flight: 0,
             lost: 0,
             has_data: false,
+            pmtud: false,
         };
 
         // 1st round.
@@ -1121,6 +1128,7 @@ mod tests {
             has_data: false,
             tx_in_flight: 0,
             lost: 0,
+            pmtud: false,
         };
 
         r.congestion_event(
@@ -1182,6 +1190,7 @@ mod tests {
             has_data: false,
             tx_in_flight: 0,
             lost: 0,
+            pmtud: false,
         };
 
         let prev_cwnd = r.cwnd();
@@ -1257,6 +1266,7 @@ mod tests {
             has_data: false,
             tx_in_flight: 0,
             lost: 0,
+            pmtud: false,
         };
 
         r.congestion_event(
@@ -1323,6 +1333,7 @@ mod tests {
             has_data: false,
             tx_in_flight: 0,
             lost: 0,
+            pmtud: false,
         };
 
         r.congestion_event(
