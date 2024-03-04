@@ -379,7 +379,7 @@ impl Recovery {
             if self.resume.enabled() && epoch == packet::Epoch::Application {
                 // Increase the congestion window by a jump determined by careful resume
                 self.congestion_window += self.resume.send_packet(
-                    self.latest_rtt, self.congestion_window, self.largest_sent_pkt[epoch], self.app_limited
+                    self.smoothed_rtt, self.congestion_window, self.largest_sent_pkt[epoch], self.app_limited
                 );
             }
 

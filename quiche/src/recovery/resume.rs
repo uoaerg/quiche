@@ -133,7 +133,7 @@ impl Resume {
     }
 
     pub fn send_packet(
-        &mut self, rtt_sample: Duration, cwnd: usize, largest_pkt_sent: u64, app_limited: bool,
+        &mut self, rtt_sample: Option<Duration>, cwnd: usize, largest_pkt_sent: u64, app_limited: bool,
     ) -> usize {
         // Do nothing when data limited to avoid having insufficient data
         // to be able to validate transmission at a higher rate
@@ -149,12 +149,20 @@ impl Resume {
                 return 0;
             }
 
+            let current_rtt = match rtt_sample {
+                Some(s) => s,
+                None => {
+                    // Don't make any decisions until we have an RTT sample
+                    return 0;
+                }
+            };
+
             // Confirm RTT is similar to that of the previous connection
-            if rtt_sample <= self.previous_rtt / 2 || rtt_sample >= self.previous_rtt * 10 {
+            if current_rtt <= self.previous_rtt / 2 || current_rtt >= self.previous_rtt * 10 {
                 trace!(
                     "{} current RTT too divergent from previous RTT - not using careful resume; \
                     rtt_sample={:?} previous_rtt={:?}",
-                    self.trace_id, rtt_sample, self.previous_rtt
+                    self.trace_id, current_rtt, self.previous_rtt
                 );
                 self.change_state(CrState::Normal, CarefulResumeTrigger::RttNotValidated);
                 return 0;
@@ -383,7 +391,7 @@ mod tests {
     fn cwnd_larger_than_jump() {
         let mut r = Resume::new("");
         r.setup(Duration::ZERO, 12_000);
-        r.send_packet(Duration::ZERO, 15_000, 50, false);
+        r.send_packet(None, 15_000, 50, false);
 
         assert_eq!(r.cr_state, CrState::Normal);
     }
@@ -393,7 +401,7 @@ mod tests {
     fn rtt_less_than_half() {
         let mut r = Resume::new("");
         r.setup(Duration::from_millis(50), 12_000);
-        r.send_packet(Duration::from_millis(10), 1_350, 10, false);
+        r.send_packet(Some(Duration::from_millis(10)), 1_350, 10, false);
 
         assert_eq!(r.cr_state, CrState::Normal);
     }
@@ -402,7 +410,7 @@ mod tests {
     fn rtt_greater_than_10() {
         let mut r = Resume::new("");
         r.setup(Duration::from_millis(50), 12_000);
-        r.send_packet(Duration::from_millis(600), 1_350, 10, false);
+        r.send_packet(Some(Duration::from_millis(600)), 1_350, 10, false);
 
         assert_eq!(r.cr_state, CrState::Normal);
     }
@@ -413,7 +421,7 @@ mod tests {
         let mut r = Resume::new("");
         r.setup(Duration::from_millis(50), 12_000);
 
-        let jump = r.send_packet(Duration::from_millis(60), 1_350, 10, false);
+        let jump = r.send_packet(Some(Duration::from_millis(60)), 1_350, 10, false);
         assert_eq!(jump, 4_650);
 
         assert_eq!(r.cr_state, CrState::Unvalidated(10));
@@ -581,7 +589,7 @@ mod tests {
         );
 
         // Send significantly more than the CWND to enter app limited
-        for i in 0..20 {
+        for i in 0..40 {
             let p = Sent {
                 pkt_num: 4 + i as u64,
                 frames: smallvec![],
@@ -650,12 +658,12 @@ mod tests {
             Ok((0, 0))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Validating(23));
+        assert_eq!(r.resume.cr_state, CrState::Validating(43));
 
         now += Duration::from_millis(25);
 
         let mut acked = ranges::RangeSet::default();
-        acked.insert(16..24);
+        acked.insert(16..44);
 
         assert_eq!(
             r.on_ack_received(
@@ -954,7 +962,7 @@ mod tests {
         assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
 
         // Send significantly more than the CWND to enter app limited
-        for i in 0..20 {
+        for i in 0..40 {
             let p = Sent {
                 pkt_num: 4 + i as u64,
                 frames: smallvec![],
@@ -1006,7 +1014,7 @@ mod tests {
             Ok((0, 0))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Validating(23));
+        assert_eq!(r.resume.cr_state, CrState::Validating(43));
         expected_pipesize += 12_000;
         assert_eq!(r.resume.pipesize, expected_pipesize);
 
@@ -1028,14 +1036,14 @@ mod tests {
             Ok((1, 1000))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::SafeRetreat(23));
+        assert_eq!(r.resume.cr_state, CrState::SafeRetreat(43));
         expected_pipesize += 3_000;
         assert_eq!(r.resume.pipesize, expected_pipesize);
 
         now += Duration::from_millis(25);
 
         let mut acked = ranges::RangeSet::default();
-        acked.insert(20..24);
+        acked.insert(20..44);
 
         assert_eq!(
             r.on_ack_received(
@@ -1051,7 +1059,7 @@ mod tests {
         );
 
         assert_eq!(r.resume.cr_state, CrState::Normal);
-        expected_pipesize += 3_000;
+        expected_pipesize += 23_000;
         assert_eq!(r.resume.pipesize, expected_pipesize);
         assert_eq!(r.ssthresh, expected_pipesize);
     }
