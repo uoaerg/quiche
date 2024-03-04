@@ -2187,8 +2187,17 @@ impl Connection {
         Ok(())
     }
 
+    /// Sets the default window for jumps in stream flow credits
     pub fn setup_default_stream_window(&mut self, window: u64) {
         self.default_stream_window = Some(window);
+    }
+
+    /// Sets the initial RTT heuristic on the active path, if the application has information about
+    /// what the RTT of the path is likely to be.
+    pub fn set_initial_rtt(&mut self, initial_rtt: Duration) -> Result<()> {
+        self.paths.get_active_mut()?.recovery
+            .set_initial_rtt(initial_rtt);
+        Ok(())
     }
 
     /// Processes QUIC packets received from the peer.
@@ -5116,6 +5125,8 @@ impl Connection {
         Ok(())
     }
 
+    /// Sets the data flow credit limit for a stream. This will not reduce a flow credit to lower
+    /// than it already is. Causes a `MAX_STREAM_DATA` frame to be sent.
     pub fn stream_max_data(
         &mut self, stream_id: u64, max_data: u64
     ) -> Result<()> {

@@ -91,7 +91,9 @@ pub struct Recovery {
 
     smoothed_rtt: Option<Duration>,
 
-    rttvar: Duration,
+    initial_rtt: Option<Duration>,
+
+    rttvar: Option<Duration>,
 
     minmax_filter: minmax::Minmax<Duration>,
 
@@ -231,11 +233,13 @@ impl Recovery {
             // handled by the `rtt()` method instead.
             smoothed_rtt: None,
 
+            initial_rtt: None,
+
             minmax_filter: minmax::Minmax::new(Duration::ZERO),
 
             min_rtt: Duration::ZERO,
 
-            rttvar: INITIAL_RTT / 2,
+            rttvar: None,
 
             max_ack_delay: recovery_config.max_ack_delay,
 
@@ -760,7 +764,9 @@ impl Recovery {
     }
 
     pub fn rtt(&self) -> Duration {
-        self.smoothed_rtt.unwrap_or(INITIAL_RTT)
+        self.smoothed_rtt
+            .or(self.initial_rtt)
+            .unwrap_or(INITIAL_RTT)
     }
 
     pub fn min_rtt(&self) -> Option<Duration> {
@@ -773,10 +779,12 @@ impl Recovery {
 
     pub fn rttvar(&self) -> Duration {
         self.rttvar
+            .or(self.initial_rtt.map(|i| i / 2))
+            .unwrap_or(INITIAL_RTT / 2)
     }
 
     pub fn pto(&self) -> Duration {
-        self.rtt() + cmp::max(self.rttvar * 4, GRANULARITY)
+        self.rtt() + cmp::max(self.rttvar() * 4, GRANULARITY)
     }
 
     pub fn delivery_rate(&self) -> u64 {
@@ -841,7 +849,7 @@ impl Recovery {
 
                 self.smoothed_rtt = Some(latest_rtt);
 
-                self.rttvar = latest_rtt / 2;
+                self.rttvar = Some(latest_rtt / 2);
             },
 
             Some(srtt) => {
@@ -857,8 +865,8 @@ impl Recovery {
                     latest_rtt
                 };
 
-                self.rttvar = self.rttvar.mul_f64(3.0 / 4.0) +
-                    sub_abs(srtt, adjusted_rtt).mul_f64(1.0 / 4.0);
+                self.rttvar = Some(self.rttvar().mul_f64(3.0 / 4.0) +
+                    sub_abs(srtt, adjusted_rtt).mul_f64(1.0 / 4.0));
 
                 self.smoothed_rtt = Some(
                     srtt.mul_f64(7.0 / 8.0) + adjusted_rtt.mul_f64(1.0 / 8.0),
@@ -1195,7 +1203,7 @@ impl Recovery {
             min_rtt: self.min_rtt,
             smoothed_rtt: self.rtt(),
             latest_rtt: self.latest_rtt,
-            rttvar: self.rttvar,
+            rttvar: self.rttvar(),
             cwnd: self.cwnd() as u64,
             bytes_in_flight: self.bytes_in_flight as u64,
             ssthresh: self.ssthresh as u64,
@@ -1221,6 +1229,10 @@ impl Recovery {
 
     pub fn setup_careful_resume(&mut self, previous_rtt: Duration, previous_cwnd: usize) {
         self.resume.setup(previous_rtt, previous_cwnd);
+    }
+
+    pub fn set_initial_rtt(&mut self, initial_rtt: Duration) {
+        self.initial_rtt = Some(initial_rtt);
     }
 }
 
