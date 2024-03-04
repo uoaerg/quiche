@@ -465,6 +465,7 @@ mod tests {
                 tx_in_flight: 0,
                 lost: 0,
                 has_data: false,
+                pmtud: false,
             };
 
             r.on_packet_sent(
@@ -498,6 +499,8 @@ mod tests {
             Ok((0, 0))
         );
 
+        assert_eq!(r.cwnd(), 12_000);
+
         // Send significantly more than the CWND to enter app limited
         for i in 0..16 {
             let p = Sent {
@@ -516,6 +519,7 @@ mod tests {
                 tx_in_flight: 0,
                 lost: 0,
                 has_data: false,
+                pmtud: false,
             };
 
             r.on_packet_sent(
@@ -531,8 +535,8 @@ mod tests {
 
         assert_eq!(r.cwnd(), 40_000);
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(20));
-        assert_eq!(r.resume.pipesize, 16_000);
+        assert_eq!(r.resume.cr_state, CrState::Unvalidated(16));
+        assert_eq!(r.resume.pipesize, 12_000);
     }
 
 
@@ -567,6 +571,7 @@ mod tests {
                 tx_in_flight: 0,
                 lost: 0,
                 has_data: false,
+                pmtud: false,
             };
 
             r.on_packet_sent(
@@ -618,6 +623,7 @@ mod tests {
                 tx_in_flight: 0,
                 lost: 0,
                 has_data: false,
+                pmtud: false,
             };
 
             r.on_packet_sent(
@@ -633,8 +639,8 @@ mod tests {
 
         assert_eq!(r.cwnd(), 40_000);
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(20));
-        assert_eq!(r.resume.pipesize, 16_000);
+        assert_eq!(r.resume.cr_state, CrState::Unvalidated(16));
+        assert_eq!(r.resume.pipesize, 12_000);
     }
     #[test]
     fn invalid_rtt_full() {
