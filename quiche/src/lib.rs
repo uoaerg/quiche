@@ -492,6 +492,9 @@ const MAX_PROBING_TIMEOUTS: usize = 3;
 // The default initial congestion window size in terms of packet count.
 const DEFAULT_INITIAL_CONGESTION_WINDOW_PACKETS: usize = 10;
 
+// The maximum data offset that can be stored in a crypto stream.
+const MAX_CRYPTO_STREAM_OFFSET: u64 = 1 << 16;
+
 /// A specialized [`Result`] type for quiche operations.
 ///
 /// This type is used throughout quiche's public API for any operation that
@@ -570,6 +573,9 @@ pub enum Error {
 
     /// Error in key update.
     KeyUpdate,
+
+    /// The peer sent more data in CRYPTO frames than we can buffer.
+    CryptoBufferExceeded,
 }
 
 impl Error {
@@ -582,7 +588,9 @@ impl Error {
             Error::FlowControl => 0x3,
             Error::StreamLimit => 0x4,
             Error::FinalSize => 0x6,
+            Error::IdLimit => 0x09,
             Error::KeyUpdate => 0xe,
+            Error::CryptoBufferExceeded => 0x0d,
             _ => 0xa,
         }
     }
@@ -609,6 +617,7 @@ impl Error {
             Error::IdLimit => -17,
             Error::OutOfIdentifiers => -18,
             Error::KeyUpdate => -19,
+            Error::CryptoBufferExceeded => -20,
         }
     }
 }
@@ -1735,6 +1744,10 @@ const QLOG_CR_PHASE: EventType =
 #[cfg(feature = "qlog")]
 const QLOG_PACKET_LOST: EventType =
     EventType::RecoveryEventType(RecoveryEventType::PacketLost);
+
+#[cfg(feature = "qlog")]
+const QLOG_CONNECTION_CLOSED: EventType =
+    EventType::ConnectivityEventType(ConnectivityEventType::ConnectionClosed);
 
 #[cfg(feature = "qlog")]
 struct QlogInfo {
@@ -3615,10 +3628,10 @@ impl Connection {
                     },
 
                     frame::Frame::RetireConnectionId { seq_num } => {
-                        self.ids.mark_retire_dcid_seq(seq_num, true);
+                        self.ids.mark_retire_dcid_seq(seq_num, true)?;
                     },
 
-                    frame::Frame::Ping { .. } => {
+                    frame::Frame::Ping { mtu_probe } if mtu_probe.is_some() => {
                         p.pmtud.pmtu_probe_lost();
                     },
 
@@ -4162,7 +4175,7 @@ impl Connection {
                 let frame = frame::Frame::RetireConnectionId { seq_num };
 
                 if push_frame_to_pkt!(b, frames, frame, left) {
-                    self.ids.mark_retire_dcid_seq(seq_num, false);
+                    self.ids.mark_retire_dcid_seq(seq_num, false)?;
 
                     ack_eliciting = true;
                     in_flight = true;
@@ -4479,10 +4492,16 @@ impl Connection {
                 if !stream.is_flushable() {
                     self.streams.remove_flushable(&priority_key);
                 } else if stream.incremental {
-                    // Shuffle the incremental stream to the back of the the
+                    // Shuffle the incremental stream to the back of the
                     // queue.
                     self.streams.remove_flushable(&priority_key);
                     self.streams.insert_flushable(&priority_key);
+                }
+
+                #[cfg(feature = "fuzzing")]
+                // Coalesce STREAM frames when fuzzing.
+                if left > frame::MAX_STREAM_OVERHEAD {
+                    continue;
                 }
 
                 break;
@@ -4884,7 +4903,7 @@ impl Connection {
         }
 
         if priority_key.incremental && readable {
-            // Shuffle the incremental stream to the back of the the queue.
+            // Shuffle the incremental stream to the back of the queue.
             self.streams.remove_readable(&priority_key);
             self.streams.insert_readable(&priority_key);
         }
@@ -5073,7 +5092,7 @@ impl Connection {
         }
 
         if incremental && writable {
-            // Shuffle the incremental stream to the back of the the queue.
+            // Shuffle the incremental stream to the back of the queue.
             self.streams.remove_writable(&priority_key);
             self.streams.insert_writable(&priority_key);
         }
@@ -7195,6 +7214,10 @@ impl Connection {
             },
 
             frame::Frame::Crypto { data } => {
+                if data.max_off() >= MAX_CRYPTO_STREAM_OFFSET {
+                    return Err(Error::CryptoBufferExceeded);
+                }
+
                 // Push the data to the stream so it can be re-ordered.
                 self.pkt_num_spaces[epoch].crypto_stream.recv.write(data)?;
 
@@ -7379,12 +7402,17 @@ impl Connection {
                     return Err(Error::InvalidState);
                 }
 
-                let retired_path_ids = self.ids.new_dcid(
+                let mut retired_path_ids = SmallVec::new();
+
+                // Retire pending path IDs before propagating the error code to
+                // make sure retired connection IDs are not in use anymore.
+                let new_dcid_res = self.ids.new_dcid(
                     conn_id.into(),
                     seq_num,
                     u128::from_be_bytes(reset_token),
                     retire_prior_to,
-                )?;
+                    &mut retired_path_ids,
+                );
 
                 for (dcid_seq, pid) in retired_path_ids {
                     let path = self.paths.get_mut(pid)?;
@@ -7415,6 +7443,9 @@ impl Connection {
                         );
                     }
                 }
+
+                // Propagate error (if any) now...
+                new_dcid_res?;
             },
 
             frame::Frame::RetireConnectionId { seq_num } => {
@@ -7890,6 +7921,74 @@ impl Connection {
     fn mark_closed(&mut self) {
         #[cfg(feature = "qlog")]
         {
+            let cc = match (self.is_established(), self.timed_out, &self.peer_error, &self.local_error) {
+                (false, _, _, _) => qlog::events::connectivity::ConnectionClosed {
+                    owner: Some(TransportOwner::Local),
+                    connection_code: None,
+                    application_code: None,
+                    internal_code: None,
+                    reason: Some("Failed to establish connection".to_string()),
+                    trigger: Some(qlog::events::connectivity::ConnectionClosedTrigger::HandshakeTimeout)
+                },
+
+                (true, true, _, _) => qlog::events::connectivity::ConnectionClosed {
+                    owner: Some(TransportOwner::Local),
+                    connection_code: None,
+                    application_code: None,
+                    internal_code: None,
+                    reason: Some("Idle timeout".to_string()),
+                    trigger: Some(qlog::events::connectivity::ConnectionClosedTrigger::IdleTimeout)
+                },
+
+                (true, false, Some(peer_error), None) => {
+                    let (connection_code, application_code) = if peer_error.is_app {
+                        (None, Some(qlog::events::ApplicationErrorCode::Value(peer_error.error_code)))
+                    } else {
+                        (Some(qlog::events::ConnectionErrorCode::Value(peer_error.error_code)), None)
+                    };
+
+                    qlog::events::connectivity::ConnectionClosed {
+                        owner: Some(TransportOwner::Remote),
+                        connection_code,
+                        application_code,
+                        internal_code: None,
+                        reason: Some(String::from_utf8_lossy(&peer_error.reason).to_string()),
+                        trigger: Some(qlog::events::connectivity::ConnectionClosedTrigger::Error),
+                    }
+                },
+
+                (true, false, None, Some(local_error)) => {
+                    let (connection_code, application_code) = if local_error.is_app {
+                        (None, Some(qlog::events::ApplicationErrorCode::Value(local_error.error_code)))
+                    } else {
+                        (Some(qlog::events::ConnectionErrorCode::Value(local_error.error_code)), None)
+                    };
+
+                    qlog::events::connectivity::ConnectionClosed {
+                        owner: Some(TransportOwner::Local),
+                        connection_code,
+                        application_code,
+                        internal_code: None,
+                        reason: Some(String::from_utf8_lossy(&local_error.reason).to_string()),
+                        trigger: Some(qlog::events::connectivity::ConnectionClosedTrigger::Error),
+                    }
+                },
+
+                _ => qlog::events::connectivity::ConnectionClosed {
+                    owner: None,
+                    connection_code: None,
+                    application_code: None,
+                    internal_code: None,
+                    reason: None,
+                    trigger: None,
+                },
+            };
+
+            qlog_with_type!(QLOG_CONNECTION_CLOSED, self.qlog, q, {
+                let ev_data = qlog::events::EventData::ConnectionClosed(cc);
+
+                q.add_event_data_now(ev_data).ok();
+            });
             self.qlog.streamer = None;
         }
         self.closed = true;
@@ -9171,6 +9270,9 @@ mod tests {
         assert_eq!(pipe.handshake(), Ok(()));
     }
 
+    // Disable this for openssl as it seems to fail for some reason. It could be
+    // because of the way the get_certs API differs from bssl.
+    #[cfg(not(feature = "openssl"))]
     #[test]
     fn verify_client_invalid() {
         let mut server_config = Config::new(crate::PROTOCOL_VERSION).unwrap();
@@ -9383,9 +9485,17 @@ mod tests {
 
     #[test]
     fn handshake_resumption() {
+        #[cfg(not(feature = "openssl"))]
         const SESSION_TICKET_KEY: [u8; 48] = [0xa; 48];
 
+        // 80-byte key(AES 256)
+        // TODO: We can set the default? or query the ticket size by calling
+        // the same API(SSL_CTX_set_tlsext_ticket_keys) twice to fetch the size.
+        #[cfg(feature = "openssl")]
+        const SESSION_TICKET_KEY: [u8; 80] = [0xa; 80];
+
         let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+
         config
             .load_cert_chain_from_pem_file("examples/cert.crt")
             .unwrap();
@@ -9467,6 +9577,7 @@ mod tests {
         assert_eq!(pipe.server.sent_count, 1);
     }
 
+    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn handshake_0rtt() {
         let mut buf = [0; 65535];
@@ -9528,6 +9639,7 @@ mod tests {
         assert_eq!(&b[..5], b"aaaaa");
     }
 
+    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn handshake_0rtt_reordered() {
         let mut buf = [0; 65535];
@@ -9599,6 +9711,7 @@ mod tests {
         assert_eq!(&b[..5], b"aaaaa");
     }
 
+    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn handshake_0rtt_truncated() {
         let mut buf = [0; 65535];
@@ -9658,6 +9771,74 @@ mod tests {
     }
 
     #[test]
+    fn crypto_limit() {
+        let mut buf = [0; 65535];
+
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.set_initial_max_data(30);
+        config.set_initial_max_stream_data_bidi_local(15);
+        config.set_initial_max_stream_data_bidi_remote(15);
+        config.set_initial_max_streams_bidi(3);
+        config.enable_early_data();
+        config.verify_peer(false);
+
+        // Perform initial handshake.
+        let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // Client send a 1-byte frame that starts from the crypto stream offset
+        // limit.
+        let frames = [frame::Frame::Crypto {
+            data: stream::RangeBuf::from(b"a", MAX_CRYPTO_STREAM_OFFSET, false),
+        }];
+
+        let pkt_type = packet::Type::Short;
+
+        let written =
+            testing::encode_pkt(&mut pipe.client, pkt_type, &frames, &mut buf)
+                .unwrap();
+
+        let active_path = pipe.server.paths.get_active().unwrap();
+        let info = RecvInfo {
+            to: active_path.local_addr(),
+            from: active_path.peer_addr(),
+        };
+
+        assert_eq!(
+            pipe.server.recv(&mut buf[..written], info),
+            Err(Error::CryptoBufferExceeded)
+        );
+
+        let written = match pipe.server.send(&mut buf) {
+            Ok((write, _)) => write,
+
+            Err(_) => unreachable!(),
+        };
+
+        let frames =
+            testing::decode_pkt(&mut pipe.client, &mut buf[..written]).unwrap();
+        let mut iter = frames.iter();
+
+        assert_eq!(
+            iter.next(),
+            Some(&frame::Frame::ConnectionClose {
+                error_code: 0x0d,
+                frame_type: 0,
+                reason: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
     fn limit_handshake_data() {
         let mut config = Config::new(PROTOCOL_VERSION).unwrap();
         config
@@ -9703,6 +9884,7 @@ mod tests {
         assert!(pipe.server.stream_finished(4));
     }
 
+    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     fn zero_rtt() {
         let mut buf = [0; 65535];
@@ -10966,6 +11148,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "openssl"))] // 0-RTT not supported when using openssl/quictls
     #[test]
     /// Simulates reception of an early 1-RTT packet on the server, by
     /// delaying the client's Handshake packet that completes the handshake.
@@ -14575,6 +14758,9 @@ mod tests {
         );
     }
 
+    // OpenSSL does not provide a straightforward interface to deal with custom
+    // off-load key signing.
+    #[cfg(not(feature = "openssl"))]
     #[test]
     fn app_close_by_server_during_handshake_private_key_failure() {
         let mut pipe = testing::Pipe::new().unwrap();
@@ -15475,6 +15661,95 @@ mod tests {
         // It is up to the application to ensure that a given SCID is not reused
         // later.
         assert_eq!(pipe.client.new_scid(&scid_1, reset_token_1, false), Ok(2));
+    }
+
+    #[test]
+    /// Tests the limit to retired DCID sequence numbers.
+    fn connection_id_retire_limit() {
+        let mut buf = [0; 65535];
+
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.verify_peer(false);
+        config.set_active_connection_id_limit(2);
+
+        let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // So far, there should not have any QUIC event.
+        assert_eq!(pipe.client.path_event_next(), None);
+        assert_eq!(pipe.server.path_event_next(), None);
+        assert_eq!(pipe.client.scids_left(), 1);
+
+        let (scid_1, reset_token_1) = testing::create_cid_and_reset_token(16);
+        assert_eq!(pipe.client.new_scid(&scid_1, reset_token_1, false), Ok(1));
+
+        // Let exchange packets over the connection.
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // At this point, the server should be notified that it has a new CID.
+        assert_eq!(pipe.server.available_dcids(), 1);
+        assert_eq!(pipe.server.path_event_next(), None);
+        assert_eq!(pipe.client.path_event_next(), None);
+        assert_eq!(pipe.client.scids_left(), 0);
+
+        let mut frames = Vec::new();
+
+        // Client retires more than 3x the number of allowed active CIDs.
+        for i in 2..=7 {
+            let (scid, reset_token) = testing::create_cid_and_reset_token(16);
+
+            frames.push(frame::Frame::NewConnectionId {
+                seq_num: i,
+                retire_prior_to: i,
+                conn_id: scid.to_vec(),
+                reset_token: reset_token.to_be_bytes(),
+            });
+        }
+
+        let pkt_type = packet::Type::Short;
+
+        let written =
+            testing::encode_pkt(&mut pipe.client, pkt_type, &frames, &mut buf)
+                .unwrap();
+
+        let active_path = pipe.server.paths.get_active().unwrap();
+        let info = RecvInfo {
+            to: active_path.local_addr(),
+            from: active_path.peer_addr(),
+        };
+
+        assert_eq!(
+            pipe.server.recv(&mut buf[..written], info),
+            Err(Error::IdLimit)
+        );
+
+        let written = match pipe.server.send(&mut buf) {
+            Ok((write, _)) => write,
+
+            Err(_) => unreachable!(),
+        };
+
+        let frames =
+            testing::decode_pkt(&mut pipe.client, &mut buf[..written]).unwrap();
+        let mut iter = frames.iter();
+
+        assert_eq!(
+            iter.next(),
+            Some(&frame::Frame::ConnectionClose {
+                error_code: 0x9,
+                frame_type: 0,
+                reason: Vec::new(),
+            })
+        );
     }
 
     // Utility function.
@@ -17008,13 +17283,13 @@ mod tests {
 
         // Check that PMTU params are configured correctly
         let pmtu_param = &mut pipe.server.paths.get_mut(pid_1).unwrap().pmtud;
-        assert_eq!(pmtu_param.get_probe_status(), true);
+        assert!(pmtu_param.get_probe_status());
         assert_eq!(pmtu_param.get_probe_size(), 1350);
         assert_eq!(pipe.advance(), Ok(()));
 
         for (_, p) in pipe.server.paths.iter_mut() {
             assert_eq!(p.pmtud.get_current(), 1350);
-            assert_eq!(p.pmtud.get_probe_status(), false);
+            assert!(!p.pmtud.get_probe_status());
         }
     }
 
@@ -17068,7 +17343,7 @@ mod tests {
         assert_eq!(pmtu_param.get_current(), 1200);
 
         // Continue searching for PMTU
-        assert_eq!(pmtu_param.get_probe_status(), true);
+        assert!(pmtu_param.get_probe_status());
     }
 }
 
