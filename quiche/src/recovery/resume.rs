@@ -435,6 +435,53 @@ mod tests {
     }
 
     #[test]
+    fn no_rtt_sample() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
+        cfg.enable_hystart(true);
+        cfg.enable_resume(true);
+
+        let mut r = Recovery::new(&cfg, "");
+        let mut now = Instant::now();
+
+        r.setup_careful_resume(Duration::from_millis(50), 80_000);
+
+        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+
+        for i in 0..10 {
+            let p = Sent {
+                pkt_num: i as u64,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: 1200,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
+        }
+
+        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+    }
+    #[test]
     fn valid_rtt_full_reno() {
         let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
         cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
@@ -651,7 +698,7 @@ mod tests {
         let mut r = Recovery::new(&cfg, "");
         let mut now = Instant::now();
 
-        r.setup_careful_resume(Duration::from_millis(30), 120_000);
+        r.setup_careful_resume(Duration::from_millis(50), 80_000);
 
         assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
 
@@ -662,7 +709,7 @@ mod tests {
                 time_sent: now,
                 time_acked: None,
                 time_lost: None,
-                size: 1000,
+                size: 1200,
                 ack_eliciting: true,
                 in_flight: true,
                 delivered: 0,
@@ -683,12 +730,12 @@ mod tests {
                 "",
             );
             assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
-            assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
+            assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
         }
 
         assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
 
-        now += Duration::from_millis(10);
+        now += Duration::from_millis(600);
 
         let mut acked = ranges::RangeSet::default();
         acked.insert(0..4);
@@ -737,10 +784,293 @@ mod tests {
             assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
+        assert_eq!(r.resume.cr_state, CrState::Normal);
+    }
+
+    #[test]
+    fn cwnd_larger_than_jump_full() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
+        cfg.enable_resume(true);
+
+        let mut r = Recovery::new(&cfg, "");
+        let mut now = Instant::now();
+
+        r.setup_careful_resume(Duration::from_millis(50), 80_000);
+
+        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+
+        for i in 0..37 {
+            let p = Sent {
+                pkt_num: i as u64,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: 1200,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
+        }
+
+        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+
+        now += Duration::from_millis(50);
+
+        let mut acked = ranges::RangeSet::default();
+        acked.insert(0..37);
+
+        assert_eq!(
+            r.on_ack_received(
+                &acked,
+                25,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+                &mut Vec::new(),
+            ),
+            Ok((0, 0))
+        );
+
+        // Send significantly more than the CWND to enter app limited
+        for i in 0..60 {
+            let p = Sent {
+                pkt_num: 37 + i as u64,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: 1200,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
+            assert_eq!(r.congestion_window, 56_400);
+
+        }
+        assert_eq!(r.resume.cr_state, CrState::Normal);
+    }
+
+    #[test]
+    fn packet_loss_recon_full_reno() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
+        cfg.enable_resume(true);
+        cfg.enable_hystart(true);
+
+
+        let mut r = Recovery::new(&cfg, "");
+        let mut now = Instant::now();
+
+        r.setup_careful_resume(Duration::from_millis(50), 80_000);
+
+        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+
+        for i in 0..10 {
+            let p = Sent {
+                pkt_num: i as u64,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: 1000,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
+        }
+
+        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+
+        now += Duration::from_millis(50);
+
+        // Ack with one missing
+        let mut acked = ranges::RangeSet::default();
+        acked.insert(0..5);
+        acked.insert(6..9);
+
+        assert_eq!(
+            r.on_ack_received(
+                &acked,
+                25,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+                &mut Vec::new(),
+            ),
+            Ok((1, 1000))
+        );
+
+        assert_eq!(r.resume.cr_state, CrState::Normal);
+    }
+    #[test]
+    fn packet_loss_recon_full_cubic() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(CongestionControlAlgorithm::CUBIC);
+        cfg.enable_resume(true);
+        cfg.enable_hystart(true);
+
+
+        let mut r = Recovery::new(&cfg, "");
+        let mut now = Instant::now();
+
+        r.setup_careful_resume(Duration::from_millis(50), 80_000);
+
+        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+
+        for i in 0..10 {
+            let p = Sent {
+                pkt_num: i as u64,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: 1000,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                pmtud: false,
+            };
+
+            r.on_packet_sent(
+                p,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
+        }
+
+        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+
+        now += Duration::from_millis(50);
+
+        // Ack with one missing
+        let mut acked = ranges::RangeSet::default();
+        acked.insert(0..5);
+        acked.insert(6..9);
+
+        assert_eq!(
+            r.on_ack_received(
+                &acked,
+                25,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+                &mut Vec::new(),
+            ),
+            Ok((1, 1000))
+        );
 
         assert_eq!(r.resume.cr_state, CrState::Normal);
     }
 
+    #[test]
+    fn pipesize_update_unval() {
+        let mut r = Resume::new("");
+        let mut now = Instant::now();
+
+        r.setup(Duration::from_millis(50), 80_000);
+        r.change_state(CrState::Unvalidated(30), CarefulResumeTrigger::CwndLimited);
+
+        let p = Acked {
+           pkt_num: 29,
+           // To exit from recovery
+           time_sent: now,
+           // More than cur_cwnd to increase cwnd
+           size: 2000,
+           delivered: 0,
+           delivered_time: now,
+           first_sent_time: now,
+           is_app_limited: false,
+           tx_in_flight: 0,
+           lost: 0,
+           rtt: Duration::ZERO,
+       };
+        r.process_ack(35, &p, 5_000);
+
+        let p = Acked {
+            pkt_num: 30,
+            // To exit from recovery
+            time_sent: now,
+            // More than cur_cwnd to increase cwnd
+            size: 2000,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
+            rtt: Duration::ZERO,
+        };
+        r.process_ack(35, &p, 5_000);
+        assert_eq!(r.pipesize, 4_000);
+        assert_eq!(r.cr_state, CrState::Validating(35));
+
+    }
 
     #[test]
     fn cr_full() {
@@ -894,74 +1224,6 @@ mod tests {
                 &mut Vec::new(),
             ),
             Ok((0, 0))
-        );
-
-        assert_eq!(r.resume.cr_state, CrState::Normal);
-    }
-
-    #[test]
-    fn reconnaissance_congestion_full() {
-        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
-        cfg.set_cc_algorithm(CongestionControlAlgorithm::Reno);
-        cfg.enable_resume(true);
-
-        let mut r = Recovery::new(&cfg, "");
-        let mut now = Instant::now();
-
-        r.setup_careful_resume(Duration::from_millis(30), 120_000);
-
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
-
-        for i in 0..4 {
-            let p = Sent {
-                pkt_num: i as u64,
-                frames: smallvec![],
-                time_sent: now,
-                time_acked: None,
-                time_lost: None,
-                size: 1000,
-                ack_eliciting: true,
-                in_flight: true,
-                delivered: 0,
-                delivered_time: now,
-                first_sent_time: now,
-                is_app_limited: false,
-                tx_in_flight: 0,
-                lost: 0,
-                has_data: false,
-                pmtud: false,
-            };
-
-            r.on_packet_sent(
-                p,
-                packet::Epoch::Application,
-                HandshakeStatus::default(),
-                now,
-                "",
-            );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
-            assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
-        }
-
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
-
-        now += Duration::from_millis(25);
-
-        // Ack with one missing
-        let mut acked = ranges::RangeSet::default();
-        acked.insert(1..4);
-
-        assert_eq!(
-            r.on_ack_received(
-                &acked,
-                25,
-                packet::Epoch::Application,
-                HandshakeStatus::default(),
-                now,
-                "",
-                &mut Vec::new(),
-            ),
-            Ok((1, 1000))
         );
 
         assert_eq!(r.resume.cr_state, CrState::Normal);
