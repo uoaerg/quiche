@@ -33,11 +33,11 @@ use std::time::Instant;
 
 use std::collections::VecDeque;
 
+use crate::packet::Epoch;
 use crate::Config;
 use crate::Result;
 
 use crate::frame;
-use crate::minmax;
 use crate::packet;
 use crate::ranges;
 
@@ -47,6 +47,7 @@ use qlog::events::EventData;
 use smallvec::SmallVec;
 
 pub use resume::CREvent;
+use self::rtt::RttStats;
 
 // Loss Recovery
 const INITIAL_PACKET_THRESHOLD: u64 = 3;
@@ -57,11 +58,7 @@ const INITIAL_TIME_THRESHOLD: f64 = 9.0 / 8.0;
 
 const GRANULARITY: Duration = Duration::from_millis(1);
 
-const INITIAL_RTT: Duration = Duration::from_millis(333);
-
 const PERSISTENT_CONGESTION_THRESHOLD: u32 = 3;
-
-const RTT_WINDOW: Duration = Duration::from_secs(300);
 
 const MAX_PTO_PROBES_COUNT: usize = 2;
 
@@ -75,47 +72,164 @@ const PACING_MULTIPLIER: f64 = 1.25;
 // an ACK.
 pub(super) const MAX_OUTSTANDING_NON_ACK_ELICITING: usize = 24;
 
+#[derive(Default)]
+struct RecoveryEpoch {
+    /// The time the most recent ack-eliciting packet was sent.
+    time_of_last_ack_eliciting_packet: Option<Instant>,
+
+    /// The largest packet number acknowledged in the packet number space so
+    /// far.
+    largest_acked_packet: Option<u64>,
+
+    /// The time at which the next packet in that packet number space can be
+    /// considered lost based on exceeding the reordering window in time.
+    loss_time: Option<Instant>,
+
+    /// An association of packet numbers in a packet number space to information
+    /// about them.
+    sent_packets: VecDeque<Sent>,
+
+    loss_probes: usize,
+    in_flight_count: usize,
+
+    acked_frames: Vec<frame::Frame>,
+    lost_frames: Vec<frame::Frame>,
+}
+
+struct LossDetectionResult {
+    largest_lost_pkt: Option<Sent>,
+    lost_packets: usize,
+    lost_bytes: usize,
+    pmtud_lost_bytes: usize,
+}
+
+impl RecoveryEpoch {
+    fn detect_lost_packets(
+        &mut self, loss_delay: Duration, pkt_thresh: u64, now: Instant,
+        trace_id: &str, epoch: Epoch,
+    ) -> LossDetectionResult {
+        self.loss_time = None;
+
+        // Minimum time of kGranularity before packets are deemed lost.
+        let loss_delay = cmp::max(loss_delay, GRANULARITY);
+        let largest_acked = self.largest_acked_packet.unwrap_or(0);
+
+        // Packets sent before this time are deemed lost.
+        let lost_send_time = now.checked_sub(loss_delay).unwrap();
+
+        let mut lost_packets = 0;
+        let mut lost_bytes = 0;
+        let mut pmtud_lost_bytes = 0;
+
+        let mut largest_lost_pkt = None;
+
+        let unacked_iter = self.sent_packets
+        .iter_mut()
+        // Skip packets that follow the largest acked packet.
+        .take_while(|p| p.pkt_num <= largest_acked)
+        // Skip packets that have already been acked or lost.
+        .filter(|p| p.time_acked.is_none() && p.time_lost.is_none());
+
+        for unacked in unacked_iter {
+            // Mark packet as lost, or set time when it should be marked.
+            if unacked.time_sent <= lost_send_time ||
+                largest_acked >= unacked.pkt_num + pkt_thresh
+            {
+                self.lost_frames.extend(unacked.frames.drain(..));
+
+                unacked.time_lost = Some(now);
+
+                if unacked.pmtud {
+                    pmtud_lost_bytes += unacked.size;
+                    self.in_flight_count -= 1;
+
+                    // Do not track PMTUD probes losses.
+                    continue;
+                }
+
+                if unacked.in_flight {
+                    lost_bytes += unacked.size;
+
+                    // Frames have already been removed from the packet, so
+                    // cloning the whole packet should be relatively cheap.
+                    largest_lost_pkt = Some(unacked.clone());
+
+                    self.in_flight_count -= 1;
+
+                    trace!(
+                        "{} packet {} lost on epoch {}",
+                        trace_id,
+                        unacked.pkt_num,
+                        epoch
+                    );
+                }
+
+                lost_packets += 1;
+            } else {
+                let loss_time = match self.loss_time {
+                    None => unacked.time_sent + loss_delay,
+
+                    Some(loss_time) =>
+                        cmp::min(loss_time, unacked.time_sent + loss_delay),
+                };
+
+                self.loss_time = Some(loss_time);
+                break;
+            }
+        }
+
+        LossDetectionResult {
+            largest_lost_pkt,
+            lost_packets,
+            lost_bytes,
+            pmtud_lost_bytes,
+        }
+    }
+
+    fn drain_packets(&mut self, rtt_stats: &RttStats, now: Instant) {
+        let mut lowest_non_expired_pkt_index = self.sent_packets.len();
+
+        // In order to avoid removing elements from the middle of the list
+        // (which would require copying other elements to compact the list),
+        // we only remove a contiguous range of elements from the start of the
+        // list.
+        //
+        // This means that acked or lost elements coming after this will not
+        // be removed at this point, but their removal is delayed for a later
+        // time, once the gaps have been filled.
+
+        // First, find the first element that is neither acked nor lost.
+        for (i, pkt) in self.sent_packets.iter().enumerate() {
+            if let Some(time_lost) = pkt.time_lost {
+                if time_lost + rtt_stats.rtt() > now {
+                    lowest_non_expired_pkt_index = i;
+                    break;
+                }
+            }
+
+            if pkt.time_acked.is_none() && pkt.time_lost.is_none() {
+                lowest_non_expired_pkt_index = i;
+                break;
+            }
+        }
+
+        // Then remove elements up to the previously found index.
+        self.sent_packets.drain(..lowest_non_expired_pkt_index);
+    }
+}
+
 pub struct Recovery {
+    epochs: [RecoveryEpoch; packet::Epoch::count()],
+
     loss_detection_timer: Option<Instant>,
 
     pto_count: u32,
 
-    time_of_last_sent_ack_eliciting_pkt:
-        [Option<Instant>; packet::Epoch::count()],
-
-    largest_acked_pkt: [u64; packet::Epoch::count()],
-
-    largest_sent_pkt: [u64; packet::Epoch::count()],
-
-    latest_rtt: Duration,
-
-    smoothed_rtt: Option<Duration>,
-
-    initial_rtt: Option<Duration>,
-
-    rttvar: Option<Duration>,
-
-    minmax_filter: minmax::Minmax<Duration>,
-
-    min_rtt: Duration,
-
-    pub max_ack_delay: Duration,
-
-    loss_time: [Option<Instant>; packet::Epoch::count()],
-
-    sent: [VecDeque<Sent>; packet::Epoch::count()],
-
-    pub lost: [Vec<frame::Frame>; packet::Epoch::count()],
-
-    pub acked: [Vec<frame::Frame>; packet::Epoch::count()],
+    rtt_stats: RttStats,
 
     pub lost_count: usize,
 
     pub lost_spurious_count: usize,
-
-    pub loss_probes: [usize; packet::Epoch::count()],
-
-    in_flight_count: [usize; packet::Epoch::count()],
 
     app_limited: bool,
 
@@ -215,48 +329,16 @@ impl Recovery {
             recovery_config.initial_congestion_window_packets;
 
         Recovery {
+            epochs: Default::default(),
+
             loss_detection_timer: None,
 
             pto_count: 0,
 
-            time_of_last_sent_ack_eliciting_pkt: [None; packet::Epoch::count()],
-
-            largest_acked_pkt: [u64::MAX; packet::Epoch::count()],
-
-            largest_sent_pkt: [0; packet::Epoch::count()],
-
-            latest_rtt: Duration::ZERO,
-
-            // This field should be initialized to `INITIAL_RTT` for the initial
-            // PTO calculation, but it also needs to be an `Option` to track
-            // whether any RTT sample was received, so the initial value is
-            // handled by the `rtt()` method instead.
-            smoothed_rtt: None,
-
-            initial_rtt: None,
-
-            minmax_filter: minmax::Minmax::new(Duration::ZERO),
-
-            min_rtt: Duration::ZERO,
-
-            rttvar: None,
-
-            max_ack_delay: recovery_config.max_ack_delay,
-
-            loss_time: [None; packet::Epoch::count()],
-
-            sent: [VecDeque::new(), VecDeque::new(), VecDeque::new()],
-
-            lost: [Vec::new(), Vec::new(), Vec::new()],
-
-            acked: [Vec::new(), Vec::new(), Vec::new()],
+            rtt_stats: RttStats::new(recovery_config.max_ack_delay),
 
             lost_count: 0,
             lost_spurious_count: 0,
-
-            loss_probes: [0; packet::Epoch::count()],
-
-            in_flight_count: [0; packet::Epoch::count()],
 
             congestion_window: initial_congestion_window,
             initial_window: initial_congestion_window,
@@ -331,8 +413,9 @@ impl Recovery {
     }
 
     pub fn reset(&mut self) {
-        self.congestion_window = self.initial_window;
-        self.in_flight_count = [0; packet::Epoch::count()];
+        self.congestion_window =
+            self.max_datagram_size * self.initial_congestion_window_packets;
+        self.epochs.iter_mut().for_each(|e| e.in_flight_count = 0);
         self.congestion_recovery_start_time = None;
         self.ssthresh = usize::MAX;
         (self.cc_ops.reset)(self);
@@ -344,9 +427,39 @@ impl Recovery {
     /// Returns whether or not we should elicit an ACK even if we wouldn't
     /// otherwise have constructed an ACK eliciting packet.
     pub fn should_elicit_ack(&self, epoch: packet::Epoch) -> bool {
-        self.loss_probes[epoch] > 0 ||
+        self.epochs[epoch].loss_probes > 0 ||
             self.outstanding_non_ack_eliciting >=
                 MAX_OUTSTANDING_NON_ACK_ELICITING
+    }
+
+    pub fn get_acked_frames(
+        &mut self, epoch: packet::Epoch,
+    ) -> impl Iterator<Item = frame::Frame> + '_ {
+        self.epochs[epoch].acked_frames.drain(..)
+    }
+
+    pub fn get_lost_frames(
+        &mut self, epoch: packet::Epoch,
+    ) -> impl Iterator<Item = frame::Frame> + '_ {
+        self.epochs[epoch].lost_frames.drain(..)
+    }
+
+    pub fn has_lost_frames(&self, epoch: packet::Epoch) -> bool {
+        !self.epochs[epoch].lost_frames.is_empty()
+    }
+
+    pub fn loss_probes(&self, epoch: packet::Epoch) -> usize {
+        self.epochs[epoch].loss_probes
+    }
+
+    #[cfg(test)]
+    pub fn inc_loss_probes(&mut self, epoch: packet::Epoch) {
+        self.epochs[epoch].loss_probes += 1;
+    }
+
+    pub fn ping_sent(&mut self, epoch: packet::Epoch) {
+        self.epochs[epoch].loss_probes =
+            self.epochs[epoch].loss_probes.saturating_sub(1);
     }
 
     pub fn on_packet_sent(
@@ -364,52 +477,43 @@ impl Recovery {
             self.outstanding_non_ack_eliciting += 1;
         }
 
-        self.largest_sent_pkt[epoch] =
-            cmp::max(self.largest_sent_pkt[epoch], pkt_num);
-
         if in_flight {
             if ack_eliciting {
-                self.time_of_last_sent_ack_eliciting_pkt[epoch] = Some(now);
+                self.epochs[epoch].time_of_last_ack_eliciting_packet = Some(now);
             }
-
-            self.in_flight_count[epoch] += 1;
 
             self.update_app_limited(
                 (self.bytes_in_flight + sent_bytes) < self.congestion_window,
             );
 
-            self.on_packet_sent_cc(sent_bytes, now);
+            self.on_packet_sent_cc(pkt_num, sent_bytes, now);
 
             if self.resume.enabled() && epoch == packet::Epoch::Application {
+                let largest_sent_pkt = self.epochs[epoch].sent_packets.iter().map(|p| p.pkt_num).max().unwrap_or_default();
                 // Increase the congestion window by a jump determined by careful resume
                 self.congestion_window += self.resume.send_packet(
-                    self.smoothed_rtt, self.congestion_window, self.largest_sent_pkt[epoch], self.app_limited
+                    self.rtt_stats.smoothed_rtt, self.congestion_window, largest_sent_pkt, self.app_limited
                 );
             }
 
             self.prr.on_packet_sent(sent_bytes);
+            self.epochs[epoch].in_flight_count += 1;
 
             self.set_loss_detection_timer(handshake_status, now);
         }
 
-        // HyStart++: Start of the round in a slow start.
-        if self.hystart.enabled() &&
-            epoch == packet::Epoch::Application &&
-            self.congestion_window < self.ssthresh
-        {
-            self.hystart.start_round(pkt_num);
-        }
+        self.bytes_sent += sent_bytes;
 
         // Pacing: Set the pacing rate if CC doesn't do its own.
         if !(self.cc_ops.has_custom_pacing)() {
-            if let Some(srtt) = self.smoothed_rtt {
+            if let Some(srtt) = self.rtt_stats.smoothed_rtt {
                 let rate = PACING_MULTIPLIER * self.congestion_window as f64 /
                     srtt.as_secs_f64();
                 self.set_pacing_rate(rate as u64, now);
             }
         }
 
-        self.schedule_next_packet(epoch, now, sent_bytes);
+        self.schedule_next_packet(now, sent_bytes);
 
         pkt.time_sent = self.get_packet_send_time();
 
@@ -420,14 +524,28 @@ impl Recovery {
             self.bytes_lost,
         );
 
-        self.sent[epoch].push_back(pkt);
+        self.epochs[epoch].sent_packets.push_back(pkt);
 
-        self.bytes_sent += sent_bytes;
         trace!("{} {:?}", trace_id, self);
     }
 
-    fn on_packet_sent_cc(&mut self, sent_bytes: usize, now: Instant) {
+    fn on_packet_sent_cc(
+        &mut self, pkt_num: u64, sent_bytes: usize, now: Instant,
+    ) {
+        self.update_app_limited(
+            (self.bytes_in_flight + sent_bytes) < self.congestion_window,
+        );
+
         (self.cc_ops.on_packet_sent)(self, sent_bytes, now);
+
+        self.prr.on_packet_sent(sent_bytes);
+
+        // HyStart++: Start of the round in a slow start.
+        if self.hystart.enabled() && self.congestion_window < self.ssthresh {
+            self.hystart.start_round(pkt_num);
+        }
+
+        self.bytes_in_flight += sent_bytes;
     }
 
     pub fn set_pacing_rate(&mut self, rate: u64, now: Instant) {
@@ -438,19 +556,15 @@ impl Recovery {
         self.pacer.next_time()
     }
 
-    fn schedule_next_packet(
-        &mut self, epoch: packet::Epoch, now: Instant, packet_size: usize,
-    ) {
+    fn schedule_next_packet(&mut self, now: Instant, packet_size: usize) {
         // Don't pace in any of these cases:
         //   * Packet contains no data.
-        //   * Packet epoch is not Epoch::Application.
         //   * The congestion window is within initcwnd.
 
-        let is_app = epoch == packet::Epoch::Application;
+        let in_initcwnd = self.bytes_sent <
+            self.max_datagram_size * self.initial_congestion_window_packets;
 
-        let in_initcwnd = self.bytes_sent < self.initial_window;
-
-        let sent_bytes = if !self.pacer.enabled() || !is_app || in_initcwnd {
+        let sent_bytes = if !self.pacer.enabled() || in_initcwnd {
             0
         } else {
             packet_size
@@ -474,12 +588,16 @@ impl Recovery {
         // a validating path, then receives an acknowledgment for that packet on
         // the active one.
 
-        if self.largest_acked_pkt[epoch] == u64::MAX {
-            self.largest_acked_pkt[epoch] = largest_acked;
-        } else {
-            self.largest_acked_pkt[epoch] =
-                cmp::max(self.largest_acked_pkt[epoch], largest_acked);
-        }
+        // Update the largest acked packet.
+        let largest_acked = self.epochs[epoch]
+            .largest_acked_packet
+            .unwrap_or(0)
+            .max(largest_acked);
+
+        self.epochs[epoch]
+            .largest_acked_packet
+            .replace(largest_acked);
+
         let mut has_ack_eliciting = false;
 
         let mut largest_newly_acked_pkt_num = 0;
@@ -487,9 +605,7 @@ impl Recovery {
 
         let mut undo_cwnd = false;
 
-        let max_rtt = cmp::max(self.latest_rtt, self.rtt());
-
-        let sent = &mut self.sent[epoch];
+        let max_rtt = cmp::max(self.rtt_stats.latest_rtt, self.rtt_stats.rtt());
 
         // Detect and mark acked packets, without removing them from the sent
         // packets list.
@@ -497,7 +613,8 @@ impl Recovery {
             let lowest_acked_in_block = r.start;
             let largest_acked_in_block = r.end - 1;
 
-            let first_unacked = if sent
+            let first_unacked = if self.epochs[epoch]
+                .sent_packets
                 .front()
                 .map(|p| p.pkt_num >= lowest_acked_in_block)
                 .unwrap_or(true)
@@ -508,11 +625,15 @@ impl Recovery {
             } else {
                 // If it is not the first packet, try to find it using binary
                 // search.
-                sent.binary_search_by_key(&lowest_acked_in_block, |e| e.pkt_num)
+                self.epochs[epoch]
+                    .sent_packets
+                    .binary_search_by_key(&lowest_acked_in_block, |e| e.pkt_num)
                     .unwrap_or_else(|i| i)
             };
 
-            let unacked_iter = sent.range_mut(first_unacked..)
+            let epoch = &mut self.epochs[epoch];
+
+            let unacked_iter = epoch.sent_packets.range_mut(first_unacked..)
                 // Skip packets that follow the largest acked packet in the block.
                 .take_while(|p| p.pkt_num <= largest_acked_in_block)
                 // Skip packets that have already been acked or lost.
@@ -524,8 +645,9 @@ impl Recovery {
                 // Check if acked packet was already declared lost.
                 if unacked.time_lost.is_some() {
                     // Calculate new packet reordering threshold.
-                    let pkt_thresh =
-                        self.largest_acked_pkt[epoch] - unacked.pkt_num + 1;
+                    let pkt_thresh = epoch.largest_acked_packet.unwrap_or(0) -
+                        unacked.pkt_num +
+                        1;
                     let pkt_thresh = cmp::min(MAX_PACKET_THRESHOLD, pkt_thresh);
 
                     self.pkt_thresh = cmp::max(self.pkt_thresh, pkt_thresh);
@@ -557,11 +679,10 @@ impl Recovery {
                 largest_newly_acked_pkt_num = unacked.pkt_num;
                 largest_newly_acked_sent_time = unacked.time_sent;
 
-                self.acked[epoch].extend(unacked.frames.drain(..));
+                epoch.acked_frames.extend(unacked.frames.drain(..));
 
                 if unacked.in_flight {
-                    self.in_flight_count[epoch] =
-                        self.in_flight_count[epoch].saturating_sub(1);
+                    epoch.in_flight_count -= 1;
                 }
 
                 newly_acked.push(Acked {
@@ -605,27 +726,23 @@ impl Recovery {
             let latest_rtt =
                 now.saturating_duration_since(largest_newly_acked_sent_time);
 
-            let ack_delay = if epoch == packet::Epoch::Application {
-                Duration::from_micros(ack_delay)
-            } else {
-                Duration::from_micros(0)
-            };
+            let ack_delay = Duration::from_micros(ack_delay);
 
             // Don't update srtt if rtt is zero.
             if !latest_rtt.is_zero() {
-                self.update_rtt(latest_rtt, ack_delay, now);
+                self.rtt_stats.update_rtt(latest_rtt, ack_delay, now);
             }
         }
 
         // Detect and mark lost packets without removing them from the sent
         // packets list.
-        let (lost_packets, lost_bytes) =
-            self.detect_lost_packets(epoch, now, trace_id);
+        let loss = self.detect_lost_packets(epoch, now, trace_id);
 
         if self.resume.enabled() {
             for packet in newly_acked.iter() {
+                let largest_sent_pkt = self.epochs[epoch].sent_packets.iter().map(|p| p.pkt_num).max().unwrap_or_default();
                 let (new_cwnd, new_ssthresh) = self.resume.process_ack(
-                    self.largest_sent_pkt[epoch], packet, self.bytes_in_flight
+                    largest_sent_pkt, packet, self.bytes_in_flight
                 );
                 if let Some(new_cwnd) = new_cwnd {
                     self.congestion_window = new_cwnd;
@@ -636,15 +753,15 @@ impl Recovery {
             }
         }
 
-        self.on_packets_acked(newly_acked, epoch, now);
+        self.on_packets_acked(newly_acked, now);
 
         self.pto_count = 0;
 
         self.set_loss_detection_timer(handshake_status, now);
 
-        self.drain_packets(epoch, now);
+        self.epochs[epoch].drain_packets(&self.rtt_stats, now);
 
-        Ok((lost_packets, lost_bytes))
+        Ok(loss)
     }
 
     pub fn on_loss_detection_timeout(
@@ -655,13 +772,12 @@ impl Recovery {
 
         if earliest_loss_time.is_some() {
             // Time threshold loss detection.
-            let (lost_packets, lost_bytes) =
-                self.detect_lost_packets(epoch, now, trace_id);
+            let loss = self.detect_lost_packets(epoch, now, trace_id);
 
             self.set_loss_detection_timer(handshake_status, now);
 
             trace!("{} {:?}", trace_id, self);
-            return (lost_packets, lost_bytes);
+            return loss;
         }
 
         let epoch = if self.bytes_in_flight > 0 {
@@ -683,17 +799,19 @@ impl Recovery {
 
         self.pto_count += 1;
 
-        self.loss_probes[epoch] =
+        let epoch = &mut self.epochs[epoch];
+
+        epoch.loss_probes =
             cmp::min(self.pto_count as usize, MAX_PTO_PROBES_COUNT);
 
-        let unacked_iter = self.sent[epoch]
+        let unacked_iter = epoch.sent_packets
             .iter_mut()
             // Skip packets that have already been acked or lost, and packets
             // that don't contain either CRYPTO or STREAM frames.
             .filter(|p| p.has_data && p.time_acked.is_none() && p.time_lost.is_none())
             // Only return as many packets as the number of probe packets that
             // will be sent.
-            .take(self.loss_probes[epoch]);
+            .take(epoch.loss_probes);
 
         // Retransmit the frames from the oldest sent packets on PTO. However
         // the packets are not actually declared lost (so there is no effect to
@@ -703,7 +821,7 @@ impl Recovery {
         // HANDSHAKE_DONE and MAX_DATA / MAX_STREAM_DATA as well, in addition
         // to CRYPTO and STREAM, if the original packet carried them.
         for unacked in unacked_iter {
-            self.lost[epoch].extend_from_slice(&unacked.frames);
+            epoch.lost_frames.extend_from_slice(&unacked.frames);
         }
 
         self.set_loss_detection_timer(handshake_status, now);
@@ -717,23 +835,26 @@ impl Recovery {
         &mut self, epoch: packet::Epoch, handshake_status: HandshakeStatus,
         now: Instant,
     ) {
-        let unacked_bytes = self.sent[epoch]
+        let epoch = &mut self.epochs[epoch];
+
+        let unacked_bytes = epoch
+            .sent_packets
             .iter()
             .filter(|p| {
                 p.in_flight && p.time_acked.is_none() && p.time_lost.is_none()
             })
             .fold(0, |acc, p| acc + p.size);
 
-        self.bytes_in_flight = self.bytes_in_flight.saturating_sub(unacked_bytes);
+        self.bytes_in_flight -= unacked_bytes;
 
-        self.sent[epoch].clear();
-        self.lost[epoch].clear();
-        self.acked[epoch].clear();
+        epoch.sent_packets.clear();
+        epoch.lost_frames.clear();
+        epoch.acked_frames.clear();
 
-        self.time_of_last_sent_ack_eliciting_pkt[epoch] = None;
-        self.loss_time[epoch] = None;
-        self.loss_probes[epoch] = 0;
-        self.in_flight_count[epoch] = 0;
+        epoch.time_of_last_ack_eliciting_packet = None;
+        epoch.loss_time = None;
+        epoch.loss_probes = 0;
+        epoch.in_flight_count = 0;
 
         self.set_loss_detection_timer(handshake_status, now);
     }
@@ -741,6 +862,7 @@ impl Recovery {
     pub fn on_path_change(
         &mut self, epoch: packet::Epoch, now: Instant, trace_id: &str,
     ) -> (usize, usize) {
+        // Time threshold loss detection.
         self.detect_lost_packets(epoch, now, trace_id)
     }
 
@@ -754,7 +876,7 @@ impl Recovery {
 
     pub fn cwnd_available(&self) -> usize {
         // Ignore cwnd when sending probe packets.
-        if self.loss_probes.iter().any(|&x| x > 0) {
+        if self.epochs.iter().any(|e| e.loss_probes > 0) {
             return usize::MAX;
         }
 
@@ -764,27 +886,19 @@ impl Recovery {
     }
 
     pub fn rtt(&self) -> Duration {
-        self.smoothed_rtt
-            .or(self.initial_rtt)
-            .unwrap_or(INITIAL_RTT)
+        self.rtt_stats.rtt()
     }
 
     pub fn min_rtt(&self) -> Option<Duration> {
-        if self.min_rtt == Duration::ZERO {
-            return None;
-        }
-
-        Some(self.min_rtt)
+        self.rtt_stats.min_rtt()
     }
 
     pub fn rttvar(&self) -> Duration {
-        self.rttvar
-            .or(self.initial_rtt.map(|i| i / 2))
-            .unwrap_or(INITIAL_RTT / 2)
+        self.rtt_stats.rttvar()
     }
 
     pub fn pto(&self) -> Duration {
-        self.rtt() + cmp::max(self.rttvar() * 4, GRANULARITY)
+        self.rtt() + cmp::max(self.rtt_stats.rttvar() * 4, GRANULARITY)
     }
 
     pub fn delivery_rate(&self) -> u64 {
@@ -837,54 +951,13 @@ impl Recovery {
         self.max_datagram_size = max_datagram_size;
     }
 
-    fn update_rtt(
-        &mut self, latest_rtt: Duration, ack_delay: Duration, now: Instant,
-    ) {
-        self.latest_rtt = latest_rtt;
-
-        match self.smoothed_rtt {
-            // First RTT sample.
-            None => {
-                self.min_rtt = self.minmax_filter.reset(now, latest_rtt);
-
-                self.smoothed_rtt = Some(latest_rtt);
-
-                self.rttvar = Some(latest_rtt / 2);
-            },
-
-            Some(srtt) => {
-                self.min_rtt =
-                    self.minmax_filter.running_min(RTT_WINDOW, now, latest_rtt);
-
-                let ack_delay = cmp::min(self.max_ack_delay, ack_delay);
-
-                // Adjust for ack delay if plausible.
-                let adjusted_rtt = if latest_rtt > self.min_rtt + ack_delay {
-                    latest_rtt - ack_delay
-                } else {
-                    latest_rtt
-                };
-
-                self.rttvar = Some(self.rttvar().mul_f64(3.0 / 4.0) +
-                    sub_abs(srtt, adjusted_rtt).mul_f64(1.0 / 4.0));
-
-                self.smoothed_rtt = Some(
-                    srtt.mul_f64(7.0 / 8.0) + adjusted_rtt.mul_f64(1.0 / 8.0),
-                );
-            },
-        }
-    }
-
     fn loss_time_and_space(&self) -> (Option<Instant>, packet::Epoch) {
         let mut epoch = packet::Epoch::Initial;
-        let mut time = self.loss_time[epoch];
+        let mut time = self.epochs[epoch].loss_time;
 
         // Iterate over all packet number spaces starting from Handshake.
-        for &e in packet::Epoch::epochs(
-            packet::Epoch::Handshake..=packet::Epoch::Application,
-        ) {
-            let new_time = self.loss_time[e];
-
+        for e in [packet::Epoch::Handshake, packet::Epoch::Application] {
+            let new_time = self.epochs[e].loss_time;
             if time.is_none() || new_time < time {
                 time = new_time;
                 epoch = e;
@@ -912,10 +985,13 @@ impl Recovery {
         let mut pto_space = packet::Epoch::Initial;
 
         // Iterate over all packet number spaces.
-        for &e in packet::Epoch::epochs(
-            packet::Epoch::Initial..=packet::Epoch::Application,
-        ) {
-            if self.in_flight_count[e] == 0 {
+        for e in [
+            packet::Epoch::Initial,
+            packet::Epoch::Handshake,
+            packet::Epoch::Application,
+        ] {
+            let epoch = &self.epochs[e];
+            if epoch.in_flight_count == 0 {
                 continue;
             }
 
@@ -926,11 +1002,13 @@ impl Recovery {
                 }
 
                 // Include max_ack_delay and backoff for Application Data.
-                duration += self.max_ack_delay * 2_u32.pow(self.pto_count);
+                duration +=
+                    self.rtt_stats.max_ack_delay * 2_u32.pow(self.pto_count);
             }
 
-            let new_time =
-                self.time_of_last_sent_ack_eliciting_pkt[e].map(|t| t + duration);
+            let new_time = epoch
+                .time_of_last_ack_eliciting_packet
+                .map(|t| t + duration);
 
             if pto_timeout.is_none() || new_time < pto_timeout {
                 pto_timeout = new_time;
@@ -965,161 +1043,46 @@ impl Recovery {
     fn detect_lost_packets(
         &mut self, epoch: packet::Epoch, now: Instant, trace_id: &str,
     ) -> (usize, usize) {
-        let largest_acked = self.largest_acked_pkt[epoch];
+        let loss_delay = cmp::max(self.rtt_stats.latest_rtt, self.rtt())
+            .mul_f64(self.time_thresh);
 
-        self.loss_time[epoch] = None;
+        let loss = self.epochs[epoch].detect_lost_packets(
+            loss_delay,
+            self.pkt_thresh,
+            now,
+            trace_id,
+            epoch,
+        );
 
-        let loss_delay =
-            cmp::max(self.latest_rtt, self.rtt()).mul_f64(self.time_thresh);
+        if let Some(pkt) = loss.largest_lost_pkt {
+            self.on_packets_lost(loss.lost_bytes, &pkt, now, epoch);
+        };
 
-        // Minimum time of kGranularity before packets are deemed lost.
-        let loss_delay = cmp::max(loss_delay, GRANULARITY);
+        self.bytes_in_flight -= loss.pmtud_lost_bytes;
 
-        // Packets sent before this time are deemed lost.
-        let lost_send_time = now.checked_sub(loss_delay).unwrap();
+        self.epochs[epoch].drain_packets(&self.rtt_stats, now);
 
-        let mut lost_packets = 0;
-        let mut lost_bytes = 0;
+        self.lost_count += loss.lost_packets;
 
-        let mut largest_lost_pkt = None;
-
-        let unacked_iter = self.sent[epoch]
-            .iter_mut()
-            // Skip packets that follow the largest acked packet.
-            .take_while(|p| p.pkt_num <= largest_acked)
-            // Skip packets that have already been acked or lost.
-            .filter(|p| p.time_acked.is_none() && p.time_lost.is_none());
-
-        for unacked in unacked_iter {
-            // Mark packet as lost, or set time when it should be marked.
-            if unacked.time_sent <= lost_send_time ||
-                largest_acked >= unacked.pkt_num + self.pkt_thresh
-            {
-                self.lost[epoch].extend(unacked.frames.drain(..));
-                unacked.time_lost = Some(now);
-
-                if unacked.in_flight && !unacked.pmtud {
-                    lost_bytes += unacked.size;
-
-                    // Frames have already been removed from the packet, so
-                    // cloning the whole packet should be relatively cheap.
-                    largest_lost_pkt = Some(unacked.clone());
-
-                    self.in_flight_count[epoch] =
-                        self.in_flight_count[epoch].saturating_sub(1);
-
-                    trace!(
-                        "{} packet {} lost on epoch {}",
-                        trace_id,
-                        unacked.pkt_num,
-                        epoch
-                    );
-
-                    #[cfg(feature = "qlog")]
-                    {
-                        let trigger = if unacked.time_sent <= lost_send_time {
-                            qlog::events::quic::PacketLostTrigger::TimeThreshold
-                        } else {
-                            qlog::events::quic::PacketLostTrigger::ReorderingThreshold
-                        };
-
-                        self.qlog_packet_loss.push_front(EventData::PacketLost(
-                            qlog::events::quic::PacketLost {
-                                header: Some(qlog::events::quic::PacketHeader {
-                                    packet_type: qlog::events::quic::PacketType::Unknown,
-                                    packet_number: Some(unacked.pkt_num),
-                                    flags: None,
-                                    token: None,
-                                    length: Some(unacked.size as u16),
-                                    version: None,
-                                    scil: None,
-                                    dcil: None,
-                                    scid: None,
-                                    dcid: None,
-                                }),
-                                frames: Some(unacked.frames.iter().map(|f| f.to_qlog()).collect()),
-                                trigger: Some(trigger),
-                            },
-                        ))
-                    }
-                }
-
-                if !unacked.pmtud {
-                    // Do not add PMTUD probes to loss statistics
-                    lost_packets += 1;
-                    self.lost_count += 1;
-                }
-            } else {
-                let loss_time = match self.loss_time[epoch] {
-                    None => unacked.time_sent + loss_delay,
-
-                    Some(loss_time) =>
-                        cmp::min(loss_time, unacked.time_sent + loss_delay),
-                };
-
-                self.loss_time[epoch] = Some(loss_time);
-                break;
-            }
-        }
-
-        self.bytes_lost += lost_bytes as u64;
-
-        if let Some(pkt) = largest_lost_pkt {
-            // Do not track lost PMTUD packets.
-            if !pkt.pmtud {
-                self.on_packets_lost(lost_bytes, &pkt, epoch, now);
-            }
-        }
-
-        self.drain_packets(epoch, now);
-
-        (lost_packets, lost_bytes)
+        (loss.lost_packets, loss.lost_bytes)
     }
 
-    fn drain_packets(&mut self, epoch: packet::Epoch, now: Instant) {
-        let mut lowest_non_expired_pkt_index = self.sent[epoch].len();
-
-        // In order to avoid removing elements from the middle of the list
-        // (which would require copying other elements to compact the list),
-        // we only remove a contiguous range of elements from the start of the
-        // list.
-        //
-        // This means that acked or lost elements coming after this will not
-        // be removed at this point, but their removal is delayed for a later
-        // time, once the gaps have been filled.
-
-        // First, find the first element that is neither acked nor lost.
-        for (i, pkt) in self.sent[epoch].iter().enumerate() {
-            if let Some(time_lost) = pkt.time_lost {
-                if time_lost + self.rtt() > now {
-                    lowest_non_expired_pkt_index = i;
-                    break;
-                }
-            }
-
-            if pkt.time_acked.is_none() && pkt.time_lost.is_none() {
-                lowest_non_expired_pkt_index = i;
-                break;
-            }
-        }
-
-        // Then remove elements up to the previously found index.
-        self.sent[epoch].drain(..lowest_non_expired_pkt_index);
-    }
-
-    fn on_packets_acked(
-        &mut self, acked: &mut Vec<Acked>, epoch: packet::Epoch, now: Instant,
-    ) {
+    fn on_packets_acked(&mut self, acked: &mut Vec<Acked>, now: Instant) {
+        let mut newly_acked_bytes = 0;
         // Update delivery rate sample per acked packet.
         for pkt in acked.iter() {
             self.delivery_rate.update_rate_sample(pkt, now);
+            newly_acked_bytes += pkt.size;
         }
 
         // Fill in a rate sample.
-        self.delivery_rate.generate_rate_sample(self.min_rtt);
+        self.delivery_rate
+            .generate_rate_sample(self.rtt_stats.min_rtt);
 
         // Call congestion control hooks.
-        (self.cc_ops.on_packets_acked)(self, acked, epoch, now);
+        (self.cc_ops.on_packets_acked)(self, acked, now);
+
+        self.bytes_in_flight -= newly_acked_bytes;
     }
 
     fn in_congestion_recovery(&self, sent_time: Instant) -> bool {
@@ -1139,21 +1102,19 @@ impl Recovery {
     }
 
     fn on_packets_lost(
-        &mut self, lost_bytes: usize, largest_lost_pkt: &Sent,
-        epoch: packet::Epoch, now: Instant,
+        &mut self, lost_bytes: usize, largest_lost_pkt: &Sent, now: Instant, epoch: Epoch
     ) {
-        self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
-
-        self.congestion_event(lost_bytes, largest_lost_pkt, epoch, now);
+        self.congestion_event(lost_bytes, largest_lost_pkt, now, epoch);
 
         if self.in_persistent_congestion(largest_lost_pkt.pkt_num) {
             self.collapse_cwnd();
         }
+
+        self.bytes_in_flight -= lost_bytes;
     }
 
     fn congestion_event(
-        &mut self, lost_bytes: usize, largest_lost_pkt: &Sent,
-        epoch: packet::Epoch, now: Instant,
+        &mut self, lost_bytes: usize, largest_lost_pkt: &Sent, now: Instant, epoch: Epoch
     ) {
         let time_sent = largest_lost_pkt.time_sent;
 
@@ -1161,16 +1122,11 @@ impl Recovery {
             (self.cc_ops.checkpoint)(self);
         }
 
-        (self.cc_ops.congestion_event)(
-            self,
-            lost_bytes,
-            largest_lost_pkt,
-            epoch,
-            now,
-        );
+        (self.cc_ops.congestion_event)(self, lost_bytes, largest_lost_pkt, now);
 
         if self.resume.enabled() {
-            let new_cwnd = self.resume.congestion_event(self.largest_sent_pkt[epoch]);
+            let largest_sent_pkt = self.epochs[epoch].sent_packets.iter().map(|p| p.pkt_num).max().unwrap_or_default();
+            let new_cwnd = self.resume.congestion_event(largest_sent_pkt);
             if new_cwnd != 0 {
                 self.congestion_window = cmp::max(new_cwnd, self.initial_window);
             }
@@ -1194,16 +1150,20 @@ impl Recovery {
     }
 
     pub fn maybe_cr_event(&mut self) -> Option<resume::CREvent> {
-        self.cr_metrics.maybe_update(self.min_rtt, self.congestion_window)
+        self.cr_metrics.maybe_update(self.rtt_stats.min_rtt, self.congestion_window)
+    }
+
+    pub fn update_max_ack_delay(&mut self, max_ack_delay: Duration) {
+        self.rtt_stats.max_ack_delay = max_ack_delay;
     }
 
     #[cfg(feature = "qlog")]
     pub fn maybe_qlog(&mut self) -> Option<EventData> {
         let qlog_metrics = QlogMetrics {
-            min_rtt: self.min_rtt,
+            min_rtt: self.rtt_stats.min_rtt,
             smoothed_rtt: self.rtt(),
-            latest_rtt: self.latest_rtt,
-            rttvar: self.rttvar(),
+            latest_rtt: self.rtt_stats.latest_rtt,
+            rttvar: self.rtt_stats.rttvar(),
             cwnd: self.cwnd() as u64,
             bytes_in_flight: self.bytes_in_flight as u64,
             ssthresh: self.ssthresh as u64,
@@ -1232,7 +1192,7 @@ impl Recovery {
     }
 
     pub fn set_initial_rtt(&mut self, initial_rtt: Duration) {
-        self.initial_rtt = Some(initial_rtt);
+        self.rtt_stats.initial_rtt = Some(initial_rtt);
     }
 }
 
@@ -1278,18 +1238,13 @@ pub struct CongestionControlOps {
 
     pub on_packet_sent: fn(r: &mut Recovery, sent_bytes: usize, now: Instant),
 
-    pub on_packets_acked: fn(
-        r: &mut Recovery,
-        packets: &mut Vec<Acked>,
-        epoch: packet::Epoch,
-        now: Instant,
-    ),
+    pub on_packets_acked:
+        fn(r: &mut Recovery, packets: &mut Vec<Acked>, now: Instant),
 
     pub congestion_event: fn(
         r: &mut Recovery,
         lost_bytes: usize,
         largest_lost_packet: &Sent,
-        epoch: packet::Epoch,
         now: Instant,
     ),
 
@@ -1335,12 +1290,10 @@ impl std::fmt::Debug for Recovery {
             },
         };
 
-        write!(f, "latest_rtt={:?} ", self.latest_rtt)?;
-        write!(f, "srtt={:?} ", self.smoothed_rtt)?;
-        write!(f, "min_rtt={:?} ", self.min_rtt)?;
-        write!(f, "rttvar={:?} ", self.rttvar)?;
-        write!(f, "loss_time={:?} ", self.loss_time)?;
-        write!(f, "loss_probes={:?} ", self.loss_probes)?;
+        write!(f, "latest_rtt={:?} ", self.rtt_stats.latest_rtt)?;
+        write!(f, "srtt={:?} ", self.rtt_stats.smoothed_rtt)?;
+        write!(f, "min_rtt={:?} ", self.rtt_stats.min_rtt)?;
+        write!(f, "rttvar={:?} ", self.rtt_stats.rttvar())?;
         write!(f, "cwnd={} ", self.congestion_window)?;
         write!(f, "ssthresh={} ", self.ssthresh)?;
         write!(f, "bytes_in_flight={} ", self.bytes_in_flight)?;
@@ -1462,14 +1415,6 @@ impl Default for HandshakeStatus {
 
             completed: true,
         }
-    }
-}
-
-fn sub_abs(lhs: Duration, rhs: Duration) -> Duration {
-    if lhs > rhs {
-        lhs - rhs
-    } else {
-        rhs - lhs
     }
 }
 
@@ -1627,7 +1572,7 @@ mod tests {
 
         let mut now = Instant::now();
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         // Start by sending a few packets.
         let p = Sent {
@@ -1656,7 +1601,8 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 1);
+
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 1);
         assert_eq!(r.bytes_in_flight, 1000);
 
         let p = Sent {
@@ -1685,7 +1631,8 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
+
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
         assert_eq!(r.bytes_in_flight, 2000);
 
         let p = Sent {
@@ -1714,7 +1661,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 3);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 3);
         assert_eq!(r.bytes_in_flight, 3000);
 
         let p = Sent {
@@ -1743,7 +1690,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 4);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 4);
         assert_eq!(r.bytes_in_flight, 4000);
 
         // Wait for 10ms.
@@ -1766,7 +1713,7 @@ mod tests {
             Ok((0, 0))
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
         assert_eq!(r.bytes_in_flight, 2000);
         assert_eq!(r.lost_count, 0);
 
@@ -1775,7 +1722,7 @@ mod tests {
 
         // PTO.
         r.on_loss_detection_timeout(HandshakeStatus::default(), now, "");
-        assert_eq!(r.loss_probes[packet::Epoch::Application], 1);
+        assert_eq!(r.epochs[packet::Epoch::Application].loss_probes, 1);
         assert_eq!(r.lost_count, 0);
         assert_eq!(r.pto_count, 1);
 
@@ -1805,7 +1752,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 3);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 3);
         assert_eq!(r.bytes_in_flight, 3000);
 
         let p = Sent {
@@ -1834,7 +1781,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 4);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 4);
         assert_eq!(r.bytes_in_flight, 4000);
         assert_eq!(r.lost_count, 0);
 
@@ -1858,7 +1805,7 @@ mod tests {
             Ok((2, 2000))
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 4);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 4);
         assert_eq!(r.bytes_in_flight, 0);
 
         assert_eq!(r.lost_count, 2);
@@ -1868,7 +1815,7 @@ mod tests {
 
         r.detect_lost_packets(packet::Epoch::Application, now, "");
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
     }
 
     #[test]
@@ -1880,7 +1827,7 @@ mod tests {
 
         let mut now = Instant::now();
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         // Start by sending a few packets.
         let p = Sent {
@@ -1909,7 +1856,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 1);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 1);
         assert_eq!(r.bytes_in_flight, 1000);
 
         let p = Sent {
@@ -1938,7 +1885,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
         assert_eq!(r.bytes_in_flight, 2000);
 
         let p = Sent {
@@ -1967,7 +1914,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 3);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 3);
         assert_eq!(r.bytes_in_flight, 3000);
 
         let p = Sent {
@@ -1996,7 +1943,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 4);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 4);
         assert_eq!(r.bytes_in_flight, 4000);
 
         // Wait for 10ms.
@@ -2020,7 +1967,7 @@ mod tests {
             Ok((0, 0))
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
         assert_eq!(r.bytes_in_flight, 1000);
         assert_eq!(r.lost_count, 0);
 
@@ -2029,9 +1976,9 @@ mod tests {
 
         // Packet is declared lost.
         r.on_loss_detection_timeout(HandshakeStatus::default(), now, "");
-        assert_eq!(r.loss_probes[packet::Epoch::Application], 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].loss_probes, 0);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
         assert_eq!(r.bytes_in_flight, 0);
 
         assert_eq!(r.lost_count, 1);
@@ -2041,7 +1988,7 @@ mod tests {
 
         r.detect_lost_packets(packet::Epoch::Application, now, "");
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
     }
 
     #[test]
@@ -2053,7 +2000,7 @@ mod tests {
 
         let mut now = Instant::now();
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         // Start by sending a few packets.
         let p = Sent {
@@ -2082,7 +2029,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 1);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 1);
         assert_eq!(r.bytes_in_flight, 1000);
 
         let p = Sent {
@@ -2111,7 +2058,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
         assert_eq!(r.bytes_in_flight, 2000);
 
         let p = Sent {
@@ -2140,7 +2087,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 3);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 3);
         assert_eq!(r.bytes_in_flight, 3000);
 
         let p = Sent {
@@ -2169,7 +2116,7 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 4);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 4);
         assert_eq!(r.bytes_in_flight, 4000);
 
         // Wait for 10ms.
@@ -2212,7 +2159,7 @@ mod tests {
             Ok((0, 0))
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 4);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
         assert_eq!(r.bytes_in_flight, 0);
 
         // Spurious loss.
@@ -2227,7 +2174,7 @@ mod tests {
 
         r.detect_lost_packets(packet::Epoch::Application, now, "");
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
     }
 
     #[test]
@@ -2239,7 +2186,7 @@ mod tests {
 
         let mut now = Instant::now();
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         // send out first packet (a full initcwnd).
         let p = Sent {
@@ -2269,7 +2216,7 @@ mod tests {
             "",
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 1);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 1);
         assert_eq!(r.bytes_in_flight, 12000);
 
         // First packet will be sent out immediately.
@@ -2295,9 +2242,9 @@ mod tests {
             Ok((0, 0))
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
         assert_eq!(r.bytes_in_flight, 0);
-        assert_eq!(r.smoothed_rtt.unwrap(), Duration::from_millis(50));
+        assert_eq!(r.rtt_stats.smoothed_rtt.unwrap(), Duration::from_millis(50));
 
         // 1 MSS increased.
         assert_eq!(r.congestion_window, 12000 + 1200);
@@ -2330,7 +2277,7 @@ mod tests {
             "",
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 1);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 1);
         assert_eq!(r.bytes_in_flight, 6000);
 
         // Pacing is not done during initial phase of connection.
@@ -2364,7 +2311,7 @@ mod tests {
             "",
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
         assert_eq!(r.bytes_in_flight, 12000);
 
         // Send the third packet out.
@@ -2395,7 +2342,7 @@ mod tests {
             "",
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 3);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 3);
         assert_eq!(r.bytes_in_flight, 13000);
 
         // We pace this outgoing packet. as all conditions for pacing
@@ -2419,7 +2366,7 @@ mod tests {
 
         let mut now = Instant::now();
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         // Start by sending a few packets.
         let p = Sent {
@@ -2448,7 +2395,9 @@ mod tests {
             now,
             "",
         );
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 1);
+
+        assert_eq!(r.epochs[packet::Epoch::Application].in_flight_count, 1);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 1);
         assert_eq!(r.bytes_in_flight, 1000);
 
         let p = Sent {
@@ -2478,6 +2427,8 @@ mod tests {
             "",
         );
 
+        assert_eq!(r.epochs[packet::Epoch::Application].in_flight_count, 2);
+
         let p = Sent {
             pkt_num: 2,
             frames: smallvec![],
@@ -2505,6 +2456,8 @@ mod tests {
             "",
         );
 
+        assert_eq!(r.epochs[packet::Epoch::Application].in_flight_count, 3);
+
         // Wait for 10ms.
         now += Duration::from_millis(10);
 
@@ -2526,7 +2479,7 @@ mod tests {
             Ok((0, 0))
         );
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
         assert_eq!(r.bytes_in_flight, 1000);
         assert_eq!(r.lost_count, 0);
 
@@ -2535,10 +2488,11 @@ mod tests {
 
         // Packet is declared lost.
         r.on_loss_detection_timeout(HandshakeStatus::default(), now, "");
-        assert_eq!(r.loss_probes[packet::Epoch::Application], 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].loss_probes, 0);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 2);
-        assert_eq!(r.bytes_in_flight, 1000);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 2);
+        assert_eq!(r.epochs[packet::Epoch::Application].in_flight_count, 0);
+        assert_eq!(r.bytes_in_flight, 0);
         assert_eq!(r.congestion_window, 12000);
 
         assert_eq!(r.lost_count, 0);
@@ -2548,7 +2502,10 @@ mod tests {
 
         r.detect_lost_packets(packet::Epoch::Application, now, "");
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].in_flight_count, 0);
+        assert_eq!(r.bytes_in_flight, 0);
+        assert_eq!(r.lost_count, 0);
     }
 }
 
@@ -2561,3 +2518,4 @@ mod resume;
 mod pacer;
 mod prr;
 mod reno;
+mod rtt;

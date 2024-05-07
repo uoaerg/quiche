@@ -578,20 +578,89 @@ pub enum Error {
     CryptoBufferExceeded,
 }
 
+/// QUIC error codes sent on the wire.
+///
+/// As defined in [RFC9000](https://www.rfc-editor.org/rfc/rfc9000.html#name-error-codes).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WireErrorCode {
+    /// An endpoint uses this with CONNECTION_CLOSE to signal that the
+    /// connection is being closed abruptly in the absence of any error.
+    NoError              = 0x0,
+    /// The endpoint encountered an internal error and cannot continue with the
+    /// connection.
+    InternalError        = 0x1,
+    /// The server refused to accept a new connection.
+    ConnectionRefused    = 0x2,
+    /// An endpoint received more data than it permitted in its advertised data
+    /// limits; see Section 4.
+    FlowControlError     = 0x3,
+    /// An endpoint received a frame for a stream identifier that exceeded its
+    /// advertised stream limit for the corresponding stream type.
+    StreamLimitError     = 0x4,
+    /// An endpoint received a frame for a stream that was not in a state that
+    /// permitted that frame.
+    StreamStateError     = 0x5,
+    /// (1) An endpoint received a STREAM frame containing data that exceeded
+    /// the previously established final size, (2) an endpoint received a
+    /// STREAM frame or a RESET_STREAM frame containing a final size that
+    /// was lower than the size of stream data that was already received, or
+    /// (3) an endpoint received a STREAM frame or a RESET_STREAM frame
+    /// containing a different final size to the one already established.
+    FinalSizeError       = 0x6,
+    /// An endpoint received a frame that was badly formatted -- for instance, a
+    /// frame of an unknown type or an ACK frame that has more
+    /// acknowledgment ranges than the remainder of the packet could carry.
+    FrameEncodingError   = 0x7,
+    /// An endpoint received transport parameters that were badly formatted,
+    /// included an invalid value, omitted a mandatory transport parameter,
+    /// included a forbidden transport parameter, or were otherwise in
+    /// error.
+    TransportParameterError = 0x8,
+    /// An endpoint received transport parameters that were badly formatted,
+    /// included an invalid value, omitted a mandatory transport parameter,
+    /// included a forbidden transport parameter, or were otherwise in
+    /// error.
+    ConnectionIdLimitError = 0x9,
+    /// An endpoint detected an error with protocol compliance that was not
+    /// covered by more specific error codes.
+    ProtocolViolation    = 0xa,
+    /// A server received a client Initial that contained an invalid Token
+    /// field.
+    InvalidToken         = 0xb,
+    /// The application or application protocol caused the connection to be
+    /// closed.
+    ApplicationError     = 0xc,
+    /// An endpoint has received more data in CRYPTO frames than it can buffer.
+    CryptoBufferExceeded = 0xd,
+    /// An endpoint detected errors in performing key updates.
+    KeyUpdateError       = 0xe,
+    /// An endpoint has reached the confidentiality or integrity limit for the
+    /// AEAD algorithm used by the given connection.
+    AeadLimitReached     = 0xf,
+    /// An endpoint has determined that the network path is incapable of
+    /// supporting QUIC. An endpoint is unlikely to receive a
+    /// CONNECTION_CLOSE frame carrying this code except when the path does
+    /// not support a large enough MTU.
+    NoViablePath         = 0x10,
+}
+
 impl Error {
     fn to_wire(self) -> u64 {
         match self {
-            Error::Done => 0x0,
-            Error::InvalidFrame => 0x7,
-            Error::InvalidStreamState(..) => 0x5,
-            Error::InvalidTransportParam => 0x8,
-            Error::FlowControl => 0x3,
-            Error::StreamLimit => 0x4,
-            Error::FinalSize => 0x6,
-            Error::IdLimit => 0x09,
-            Error::KeyUpdate => 0xe,
-            Error::CryptoBufferExceeded => 0x0d,
-            _ => 0xa,
+            Error::Done => WireErrorCode::NoError as u64,
+            Error::InvalidFrame => WireErrorCode::FrameEncodingError as u64,
+            Error::InvalidStreamState(..) =>
+                WireErrorCode::StreamStateError as u64,
+            Error::InvalidTransportParam =>
+                WireErrorCode::TransportParameterError as u64,
+            Error::FlowControl => WireErrorCode::FlowControlError as u64,
+            Error::StreamLimit => WireErrorCode::StreamLimitError as u64,
+            Error::IdLimit => WireErrorCode::ConnectionIdLimitError as u64,
+            Error::FinalSize => WireErrorCode::FinalSizeError as u64,
+            Error::CryptoBufferExceeded =>
+                WireErrorCode::CryptoBufferExceeded as u64,
+            Error::KeyUpdate => WireErrorCode::KeyUpdateError as u64,
+            _ => WireErrorCode::ProtocolViolation as u64,
         }
     }
 
@@ -2996,7 +3065,7 @@ impl Connection {
         // Process acked frames. Note that several packets from several paths
         // might have been acked by the received packet.
         for (_, p) in self.paths.iter_mut() {
-            for acked in p.recovery.acked[epoch].drain(..) {
+            for acked in p.recovery.get_acked_frames(epoch) {
                 match acked {
                     frame::Frame::Ping {
                         mtu_probe: Some(mtu_probe),
@@ -3467,7 +3536,7 @@ impl Connection {
             // When sending multiple PTO probes, don't coalesce them together,
             // so they are sent on separate UDP datagrams.
             if let Ok(epoch) = ty.to_epoch() {
-                if self.paths.get_mut(send_pid)?.recovery.loss_probes[epoch] > 0 {
+                if self.paths.get_mut(send_pid)?.recovery.loss_probes(epoch) > 0 {
                     break;
                 }
             }
@@ -3543,7 +3612,7 @@ impl Connection {
 
         // Process lost frames. There might be several paths having lost frames.
         for (_, p) in self.paths.iter_mut() {
-            for lost in p.recovery.lost[epoch].drain(..) {
+            for lost in p.recovery.get_lost_frames(epoch) {
                 match lost {
                     frame::Frame::CryptoHeader { offset, length } => {
                         pkt_space.crypto_stream.send.retransmit(offset, length);
@@ -4531,8 +4600,7 @@ impl Connection {
 
         if ack_eliciting && !pmtud_probe {
             path.needs_ack_eliciting = false;
-            path.recovery.loss_probes[epoch] =
-                path.recovery.loss_probes[epoch].saturating_sub(1);
+            path.recovery.ping_sent(epoch);
         }
 
         if frames.is_empty() {
@@ -6818,7 +6886,7 @@ impl Connection {
 
         let active_path = self.paths.get_active_mut()?;
 
-        active_path.recovery.max_ack_delay = max_ack_delay;
+        active_path.recovery.update_max_ack_delay(max_ack_delay);
 
         if active_path.pmtud.get_probe_status() {
             active_path.recovery.pmtud_update_max_datagram_size(
@@ -6983,12 +7051,12 @@ impl Connection {
 
             // There are lost frames in this packet number space.
             for (_, p) in self.paths.iter() {
-                if !p.recovery.lost[epoch].is_empty() {
+                if p.recovery.has_lost_frames(epoch) {
                     return Ok(packet::Type::from_epoch(epoch));
                 }
 
                 // We need to send PTO probe packets.
-                if p.recovery.loss_probes[epoch] > 0 {
+                if p.recovery.loss_probes(epoch) > 0 {
                     return Ok(packet::Type::from_epoch(epoch));
                 }
             }
@@ -9004,7 +9072,7 @@ pub mod testing {
             scid: ConnectionId::from_ref(
                 conn.ids.get_scid(*active_scid_seq)?.cid.as_ref(),
             ),
-            pkt_num: 0,
+            pkt_num: pn,
             pkt_num_len: pn_len,
             token: conn.token.clone(),
             versions: None,
@@ -10175,7 +10243,7 @@ mod tests {
             .get_active_mut()
             .expect("no active path")
             .recovery
-            .loss_probes[packet::Epoch::Initial] = 1;
+            .inc_loss_probes(packet::Epoch::Initial);
 
         let initial_path = pipe
             .server
@@ -11254,11 +11322,7 @@ mod tests {
         assert_eq!(r.next(), Some(0));
         assert_eq!(r.next(), None);
 
-        loop {
-            if pipe.server.stream_send(0, b"world", false) == Err(Error::Done) {
-                break;
-            }
-
+        while pipe.server.stream_send(0, b"world", false) != Err(Error::Done) {
             assert_eq!(pipe.advance(), Ok(()));
         }
 
@@ -12309,6 +12373,157 @@ mod tests {
         assert_eq!(pipe.handshake(), Ok(()));
 
         assert_eq!(pipe.server_recv(&mut buf[..0]), Err(Error::BufferTooShort));
+    }
+
+    #[test]
+    fn stop_sending_before_flushed_packets() {
+        let mut b = [0; 15];
+
+        let mut buf = [0; 65535];
+
+        let mut pipe = testing::Pipe::new().unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // Client sends some data, and closes stream.
+        assert_eq!(pipe.client.stream_send(0, b"hello", true), Ok(5));
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // Server gets data.
+        let mut r = pipe.server.readable();
+        assert_eq!(r.next(), Some(0));
+        assert_eq!(r.next(), None);
+
+        assert_eq!(pipe.server.stream_recv(0, &mut b), Ok((5, true)));
+        assert!(pipe.server.stream_finished(0));
+
+        let mut r = pipe.server.readable();
+        assert_eq!(r.next(), None);
+
+        // Server sends data, until blocked.
+        let mut r = pipe.server.writable();
+        assert_eq!(r.next(), Some(0));
+        assert_eq!(r.next(), None);
+
+        while pipe.server.stream_send(0, b"world", false) != Err(Error::Done) {}
+
+        let mut r = pipe.server.writable();
+        assert_eq!(r.next(), None);
+
+        // Client sends STOP_SENDING.
+        let frames = [frame::Frame::StopSending {
+            stream_id: 0,
+            error_code: 42,
+        }];
+
+        let pkt_type = packet::Type::Short;
+        let len = pipe
+            .send_pkt_to_server(pkt_type, &frames, &mut buf)
+            .unwrap();
+
+        // Server sent a RESET_STREAM frame in response.
+        let frames =
+            testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
+
+        let mut iter = frames.iter();
+
+        // Skip ACK frame.
+        iter.next();
+
+        assert_eq!(
+            iter.next(),
+            Some(&frame::Frame::ResetStream {
+                stream_id: 0,
+                error_code: 42,
+                final_size: 0,
+            })
+        );
+
+        // Stream is writable, but writing returns an error.
+        let mut r = pipe.server.writable();
+        assert_eq!(r.next(), Some(0));
+        assert_eq!(r.next(), None);
+
+        assert_eq!(
+            pipe.server.stream_send(0, b"world", true),
+            Err(Error::StreamStopped(42)),
+        );
+
+        assert_eq!(pipe.server.streams.len(), 1);
+
+        // Client acks RESET_STREAM frame.
+        let mut ranges = ranges::RangeSet::default();
+        ranges.insert(0..6);
+
+        let frames = [frame::Frame::ACK {
+            ack_delay: 15,
+            ranges,
+            ecn_counts: None,
+        }];
+
+        assert_eq!(pipe.send_pkt_to_server(pkt_type, &frames, &mut buf), Ok(0));
+
+        // Client has ACK'd the RESET_STREAM so the stream is collected.
+        assert_eq!(pipe.server.streams.len(), 0);
+    }
+
+    #[test]
+    fn reset_before_flushed_packets() {
+        let mut b = [0; 15];
+
+        let mut config = Config::new(crate::PROTOCOL_VERSION).unwrap();
+        config
+            .load_cert_chain_from_pem_file("examples/cert.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.set_initial_max_data(30);
+        config.set_initial_max_stream_data_bidi_local(5);
+        config.set_initial_max_stream_data_bidi_remote(15);
+        config.set_initial_max_streams_bidi(3);
+        config.verify_peer(false);
+
+        let mut pipe = testing::Pipe::with_config(&mut config).unwrap();
+        assert_eq!(pipe.handshake(), Ok(()));
+
+        // Client sends some data, and closes stream.
+        assert_eq!(pipe.client.stream_send(0, b"hello", true), Ok(5));
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // Server gets data.
+        let mut r = pipe.server.readable();
+        assert_eq!(r.next(), Some(0));
+        assert_eq!(r.next(), None);
+
+        assert_eq!(pipe.server.stream_recv(0, &mut b), Ok((5, true)));
+        assert!(pipe.server.stream_finished(0));
+
+        let mut r = pipe.server.readable();
+        assert_eq!(r.next(), None);
+
+        // Server sends data and is blocked by small stream flow control.
+        let mut r = pipe.server.writable();
+        assert_eq!(r.next(), Some(0));
+        assert_eq!(r.next(), None);
+
+        assert_eq!(pipe.server.stream_send(0, b"helloworld", false), Ok(5));
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // Client reads to give flow control back.
+        assert_eq!(pipe.client.stream_recv(0, &mut b), Ok((5, false)));
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // Server writes stream data and resets the stream before sending a
+        // packet.
+        assert_eq!(pipe.server.stream_send(0, b"world", false), Ok(5));
+        pipe.server.stream_shutdown(0, Shutdown::Write, 42).unwrap();
+        assert_eq!(pipe.advance(), Ok(()));
+
+        // Client has ACK'd the RESET_STREAM so the stream is collected.
+        assert_eq!(pipe.server.streams.len(), 0);
     }
 
     #[test]
@@ -14033,7 +14248,7 @@ mod tests {
                 .get_active()
                 .expect("no active")
                 .recovery
-                .loss_probes[epoch],
+                .loss_probes(epoch),
             1,
         );
 
@@ -14045,7 +14260,7 @@ mod tests {
                 .get_active()
                 .expect("no active")
                 .recovery
-                .loss_probes[epoch],
+                .loss_probes(epoch),
             0,
         );
 
@@ -14091,7 +14306,7 @@ mod tests {
                 .get_active()
                 .expect("no active")
                 .recovery
-                .loss_probes[epoch],
+                .loss_probes(epoch),
             1,
         );
 
@@ -14104,7 +14319,7 @@ mod tests {
                 .get_active()
                 .expect("no active")
                 .recovery
-                .loss_probes[epoch],
+                .loss_probes(epoch),
             0,
         );
 
@@ -14120,7 +14335,7 @@ mod tests {
                 .get_active()
                 .expect("no active")
                 .recovery
-                .loss_probes[epoch],
+                .loss_probes(epoch),
             2,
         );
 
@@ -14133,7 +14348,7 @@ mod tests {
                 .get_active()
                 .expect("no active")
                 .recovery
-                .loss_probes[epoch],
+                .loss_probes(epoch),
             1,
         );
 
@@ -14146,7 +14361,7 @@ mod tests {
                 .get_active()
                 .expect("no active")
                 .recovery
-                .loss_probes[epoch],
+                .loss_probes(epoch),
             0,
         );
     }
@@ -17041,11 +17256,7 @@ mod tests {
         assert_eq!(pipe.server.stream_writable(0, 0), Ok(true));
 
         // Server sends data on stream 0, until blocked.
-        loop {
-            if pipe.server.stream_send(0, b"world", false) == Err(Error::Done) {
-                break;
-            }
-
+        while pipe.server.stream_send(0, b"world", false) != Err(Error::Done) {
             assert_eq!(pipe.advance(), Ok(()));
         }
 

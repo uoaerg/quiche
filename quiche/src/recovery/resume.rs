@@ -426,6 +426,7 @@ mod tests {
         assert_eq!(r.cr_state, CrState::Unvalidated(20));
         assert_eq!(r.pipesize, 20_500);
     }
+
     #[test]
     fn packet_loss_recon() {
         let mut r = Resume::new("");
@@ -442,11 +443,11 @@ mod tests {
         cfg.enable_resume(true);
 
         let mut r = Recovery::new(&cfg, "");
-        let mut now = Instant::now();
+        let now = Instant::now();
 
         r.setup_careful_resume(Duration::from_millis(50), 80_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..10 {
             let p = Sent {
@@ -475,7 +476,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
         }
 
@@ -493,7 +494,7 @@ mod tests {
 
         r.setup_careful_resume(Duration::from_millis(50), 80_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..5 {
             let p = Sent {
@@ -522,7 +523,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
@@ -576,13 +577,13 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
         assert_eq!(r.cwnd(), 40_000);
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(16));
+        assert_eq!(r.resume.cr_state, CrState::Unvalidated(15));
         assert_eq!(r.resume.pipesize, 12_000);
     }
 
@@ -599,7 +600,7 @@ mod tests {
 
         r.setup_careful_resume(Duration::from_millis(50), 80_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..5 {
             let p = Sent {
@@ -628,7 +629,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
@@ -680,13 +681,13 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
         assert_eq!(r.cwnd(), 40_000);
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(16));
+        assert_eq!(r.resume.cr_state, CrState::Unvalidated(15));
         assert_eq!(r.resume.pipesize, 12_000);
     }
     #[test]
@@ -700,7 +701,7 @@ mod tests {
 
         r.setup_careful_resume(Duration::from_millis(50), 80_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..4 {
             let p = Sent {
@@ -729,7 +730,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
         }
 
@@ -781,7 +782,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
         assert_eq!(r.resume.cr_state, CrState::Normal);
@@ -798,7 +799,7 @@ mod tests {
 
         r.setup_careful_resume(Duration::from_millis(50), 80_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..37 {
             let p = Sent {
@@ -827,7 +828,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
         }
 
@@ -879,7 +880,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
             assert_eq!(r.congestion_window, 56_400);
 
@@ -900,7 +901,7 @@ mod tests {
 
         r.setup_careful_resume(Duration::from_millis(50), 80_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..10 {
             let p = Sent {
@@ -929,7 +930,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
@@ -970,7 +971,7 @@ mod tests {
 
         r.setup_careful_resume(Duration::from_millis(50), 80_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..10 {
             let p = Sent {
@@ -999,7 +1000,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
@@ -1031,7 +1032,7 @@ mod tests {
     #[test]
     fn pipesize_update_unval() {
         let mut r = Resume::new("");
-        let mut now = Instant::now();
+        let now = Instant::now();
 
         r.setup(Duration::from_millis(50), 80_000);
         r.change_state(CrState::Unvalidated(30), CarefulResumeTrigger::CwndLimited);
@@ -1082,7 +1083,7 @@ mod tests {
         let mut now = Instant::now();
 
         r.setup_careful_resume(Duration::from_millis(30), 120_000);
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..4 {
             let p = Sent {
@@ -1111,7 +1112,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
@@ -1163,17 +1164,17 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(15));
+        assert_eq!(r.resume.cr_state, CrState::Unvalidated(14));
         assert_eq!(r.congestion_window, 60_000);
 
         now += Duration::from_millis(25);
 
         let mut acked = ranges::RangeSet::default();
-        acked.insert(4..15);
+        acked.insert(4..14);
 
         assert_eq!(
             r.on_ack_received(
@@ -1188,10 +1189,10 @@ mod tests {
             Ok((0, 0))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(15));
+        assert_eq!(r.resume.cr_state, CrState::Unvalidated(14));
 
         let mut acked = ranges::RangeSet::default();
-        acked.insert(15..16);
+        acked.insert(14..16);
 
         assert_eq!(
             r.on_ack_received(
@@ -1240,7 +1241,7 @@ mod tests {
 
         r.setup_careful_resume(Duration::from_millis(30), 120_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..4 {
             let p = Sent {
@@ -1269,7 +1270,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
@@ -1323,11 +1324,11 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(15));
+        assert_eq!(r.resume.cr_state, CrState::Unvalidated(14));
         assert_eq!(r.congestion_window, 60_000);
         let mut expected_pipesize = r.resume.pipesize;
 
@@ -1390,7 +1391,7 @@ mod tests {
 
         r.setup_careful_resume(Duration::from_millis(30), 120_000);
 
-        assert_eq!(r.sent[packet::Epoch::Application].len(), 0);
+        assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), 0);
 
         for i in 0..4 {
             let p = Sent {
@@ -1419,7 +1420,7 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
@@ -1473,11 +1474,11 @@ mod tests {
                 now,
                 "",
             );
-            assert_eq!(r.sent[packet::Epoch::Application].len(), i + 1);
+            assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(15));
+        assert_eq!(r.resume.cr_state, CrState::Unvalidated(14));
         assert_eq!(r.congestion_window, 60_000);
         let mut expected_pipesize = r.resume.pipesize;
 
