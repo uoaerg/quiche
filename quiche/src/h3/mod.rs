@@ -1164,6 +1164,8 @@ impl Connection {
             return Err(Error::FrameUnexpected);
         }
 
+        self.send_headers(conn, stream_id, headers, fin)?;
+
         // Clamp and shift urgency into quiche-priority space
         let urgency = priority
             .urgency
@@ -1171,8 +1173,6 @@ impl Connection {
             PRIORITY_URGENCY_OFFSET;
 
         conn.stream_priority(stream_id, urgency, priority.incremental)?;
-
-        self.send_headers(conn, stream_id, headers, fin)?;
 
         Ok(())
     }
@@ -1731,6 +1731,15 @@ impl Connection {
         // events are returned when receiving empty stream frames with the fin
         // flag set.
         if let Some(finished) = self.finished_streams.pop_front() {
+            if conn.stream_readable(finished) {
+                // The stream is finished, but is still readable, it may
+                // indicate that there is a pending error, such as reset.
+                if let Err(crate::Error::StreamReset(e)) =
+                    conn.stream_recv(finished, &mut [])
+                {
+                    return Ok((finished, Event::Reset(e)));
+                }
+            }
             return Ok((finished, Event::Finished));
         }
 
@@ -2869,9 +2878,22 @@ pub mod testing {
 
     impl Session {
         pub fn new() -> Result<Session> {
+            fn path_relative_to_manifest_dir(path: &str) -> String {
+                std::fs::canonicalize(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path),
+                )
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+            }
+
             let mut config = crate::Config::new(crate::PROTOCOL_VERSION)?;
-            config.load_cert_chain_from_pem_file("examples/cert.crt")?;
-            config.load_priv_key_from_pem_file("examples/cert.key")?;
+            config.load_cert_chain_from_pem_file(
+                &path_relative_to_manifest_dir("examples/cert.crt"),
+            )?;
+            config.load_priv_key_from_pem_file(
+                &path_relative_to_manifest_dir("examples/cert.key"),
+            )?;
             config.set_application_protos(&[b"h3"])?;
             config.set_initial_max_data(1500);
             config.set_initial_max_stream_data_bidi_local(150);
@@ -6400,6 +6422,43 @@ mod tests {
         assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
         assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
         assert_eq!(s.poll_server(), Err(Error::Done));
+    }
+
+    #[test]
+    fn reset_finished_at_server_with_data_pending() {
+        let mut s = Session::new().unwrap();
+        s.handshake().unwrap();
+
+        // Client sends HEADERS and doesn't fin.
+        let (stream, req) = s.send_request(false).unwrap();
+
+        assert!(s.send_body_client(stream, false).is_ok());
+
+        assert_eq!(s.pipe.advance(), Ok(()));
+
+        let ev_headers = Event::Headers {
+            list: req,
+            has_body: true,
+        };
+
+        // Server receives headers and data...
+        assert_eq!(s.poll_server(), Ok((stream, ev_headers)));
+        assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
+
+        // ..then Client sends RESET_STREAM.
+        assert_eq!(
+            s.pipe
+                .client
+                .stream_shutdown(stream, crate::Shutdown::Write, 0),
+            Ok(())
+        );
+
+        assert_eq!(s.pipe.advance(), Ok(()));
+
+        // Server receives the reset and there are no more readable streams.
+        assert_eq!(s.poll_server(), Ok((stream, Event::Reset(0))));
+        assert_eq!(s.poll_server(), Err(Error::Done));
+        assert_eq!(s.pipe.server.readable().len(), 0);
     }
 
     #[test]

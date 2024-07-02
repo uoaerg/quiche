@@ -26,63 +26,63 @@
 
 use super::*;
 
-// BBR Functions at Initialization.
+use rtt::INITIAL_RTT;
+
+use std::time::Instant;
+
+// BBR2 Functions at Initialization.
 //
 
-// 4.3.1.  Initialization Steps
-pub fn bbr_init(r: &mut Recovery) {
-    let rtt = r.rtt();
-    let bbr = &mut r.bbr_state;
+// 4.2.1.  Initialization
+pub fn bbr2_init(r: &mut Congestion) {
+    let now = Instant::now();
 
-    bbr.rtprop = rtt;
-    bbr.rtprop_stamp = Instant::now();
-    bbr.next_round_delivered = r.delivery_rate.delivered();
+    let bbr = &mut r.bbr2_state;
+    bbr.min_rtt = INITIAL_RTT;
+    bbr.min_rtt_stamp = now;
+    bbr.probe_rtt_done_stamp = None;
+    bbr.probe_rtt_round_done = false;
+    bbr.prior_cwnd = 0;
+    bbr.idle_restart = false;
+    bbr.extra_acked_interval_start = now;
+    bbr.extra_acked_delivered = 0;
+    bbr.bw_lo = u64::MAX;
+    bbr.bw_hi = u64::MAX;
+    bbr.inflight_lo = usize::MAX;
+    bbr.inflight_hi = usize::MAX;
+    bbr.probe_up_cnt = usize::MAX;
 
     r.send_quantum = r.max_datagram_size;
 
-    bbr_init_round_counting(r);
-    bbr_init_full_pipe(r);
-    bbr_init_pacing_rate(r);
-    bbr_enter_startup(r);
+    per_loss::bbr2_reset_congestion_signals(r);
+    per_loss::bbr2_reset_lower_bounds(r);
+    bbr2_init_round_counting(r);
+    bbr2_init_full_pipe(r);
+    pacing::bbr2_init_pacing_rate(r);
+    bbr2_enter_startup(r);
 }
 
-// 4.1.1.3.  Tracking Time for the BBR.BtlBw Max Filter
-fn bbr_init_round_counting(r: &mut Recovery) {
-    let bbr = &mut r.bbr_state;
+// 4.5.1.  BBR.round_count: Tracking Packet-Timed Round Trips
+fn bbr2_init_round_counting(r: &mut Congestion) {
+    let bbr = &mut r.bbr2_state;
 
     bbr.next_round_delivered = 0;
     bbr.round_start = false;
     bbr.round_count = 0;
 }
 
-// 4.2.1.  Pacing Rate
-fn bbr_init_pacing_rate(r: &mut Recovery) {
-    let bbr = &mut r.bbr_state;
+// 4.3.1.1.  Startup Dynamics
+pub fn bbr2_enter_startup(r: &mut Congestion) {
+    let bbr = &mut r.bbr2_state;
 
-    let srtt = r
-        .rtt_stats
-        .smoothed_rtt
-        .unwrap_or_else(|| Duration::from_millis(1))
-        .as_secs_f64();
-
-    // At init, cwnd is initcwnd.
-    let nominal_bandwidth = r.congestion_window as f64 / srtt;
-
-    bbr.pacing_rate = (bbr.pacing_gain * nominal_bandwidth) as u64;
+    bbr.state = BBR2StateMachine::Startup;
+    bbr.pacing_gain = STARTUP_PACING_GAIN;
+    bbr.cwnd_gain = STARTUP_CWND_GAIN;
 }
 
-// 4.3.2.1.  Startup Dynamics
-pub fn bbr_enter_startup(r: &mut Recovery) {
-    let bbr = &mut r.bbr_state;
-
-    bbr.state = BBRStateMachine::Startup;
-    bbr.pacing_gain = BBR_HIGH_GAIN;
-    bbr.cwnd_gain = BBR_HIGH_GAIN;
-}
-
-// 4.3.2.2.  Estimating When Startup has Filled the Pipe
-fn bbr_init_full_pipe(r: &mut Recovery) {
-    let bbr = &mut r.bbr_state;
+// 4.3.1.2.  Exiting Startup Based on Bandwidth Plateau
+fn bbr2_init_full_pipe(r: &mut Congestion) {
+    let bbr = &mut r.bbr2_state;
 
     bbr.filled_pipe = false;
     bbr.full_bw = 0;

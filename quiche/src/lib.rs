@@ -814,6 +814,8 @@ pub struct Config {
     max_connection_window: u64,
     max_stream_window: u64,
 
+    max_amplification_factor: usize,
+
     disable_dcid_reuse: bool,
 }
 
@@ -880,6 +882,8 @@ impl Config {
 
             max_connection_window: MAX_CONNECTION_WINDOW,
             max_stream_window: stream::MAX_STREAM_WINDOW,
+
+            max_amplification_factor: MAX_AMPLIFICATION_FACTOR,
 
             disable_dcid_reuse: false,
         })
@@ -1065,6 +1069,13 @@ impl Config {
         }
 
         self.set_application_protos(&protos_list)
+    }
+
+    /// Sets the anti-amplification limit factor.
+    ///
+    /// The default value is `3`.
+    pub fn set_max_amplification_factor(&mut self, v: usize) {
+        self.max_amplification_factor = v;
     }
 
     /// Sets the `max_idle_timeout` transport parameter, in milliseconds.
@@ -1449,6 +1460,9 @@ pub struct Connection {
     /// Total number of bytes received over the connection.
     recv_bytes: u64,
 
+    /// Total number of bytes sent acked over the connection.
+    acked_bytes: u64,
+
     /// Total number of bytes sent lost over the connection.
     lost_bytes: u64,
 
@@ -1542,7 +1556,7 @@ pub struct Connection {
     /// Whether the connection is closed.
     closed: bool,
 
-    // Whether the connection was timed out
+    /// Whether the connection was timed out.
     timed_out: bool,
 
     /// Whether to send GREASE.
@@ -1565,9 +1579,6 @@ pub struct Connection {
     /// Connection IDs when the peer migrates.
     disable_dcid_reuse: bool,
 
-    /// A resusable buffer used by Recovery
-    newly_acked: Vec<recovery::Acked>,
-
     /// The number of streams reset by local.
     reset_stream_local_count: u64,
 
@@ -1579,6 +1590,9 @@ pub struct Connection {
 
     /// The number of streams stopped by remote.
     stopped_stream_remote_count: u64,
+
+    /// The anti-amplification limit factor.
+    max_amplification_factor: usize,
 
     cr_event: Option<recovery::CREvent>,
 
@@ -1933,6 +1947,7 @@ impl Connection {
             retrans_count: 0,
             sent_bytes: 0,
             recv_bytes: 0,
+            acked_bytes: 0,
             lost_bytes: 0,
 
             rx_data: 0,
@@ -2031,12 +2046,12 @@ impl Connection {
 
             disable_dcid_reuse: config.disable_dcid_reuse,
 
-            newly_acked: Vec::new(),
-
             reset_stream_local_count: 0,
             stopped_stream_local_count: 0,
             reset_stream_remote_count: 0,
             stopped_stream_remote_count: 0,
+
+            max_amplification_factor: config.max_amplification_factor,
 
             cr_event: None,
 
@@ -2089,8 +2104,6 @@ impl Connection {
 
             conn.derived_initial_secrets = true;
         }
-
-        conn.paths.get_mut(active_path_id)?.recovery.on_init();
 
         Ok(conn)
     }
@@ -2348,7 +2361,7 @@ impl Connection {
             // Note that we also need to limit the number of bytes we sent on a
             // path if we are not the host that initiated its usage.
             if self.is_server && !recv_path.verified_peer_address {
-                recv_path.max_send_bytes += len * MAX_AMPLIFICATION_FACTOR;
+                recv_path.max_send_bytes += len * self.max_amplification_factor;
             }
         } else if !self.is_server {
             // If a client receives packets from an unknown server address,
@@ -3723,7 +3736,9 @@ impl Connection {
         };
 
         let pn = pkt_space.next_pkt_num;
-        let pn_len = packet::pkt_num_len(pn)?;
+        let largest_acked_pkt =
+            path.recovery.get_largest_acked_on_epoch(epoch).unwrap_or(0);
+        let pn_len = packet::pkt_num_len(pn, largest_acked_pkt);
 
         // The AEAD overhead at the current encryption level.
         let crypto_overhead = pkt_space.crypto_overhead().ok_or(Error::Done)?;
@@ -3840,7 +3855,7 @@ impl Connection {
             b.skip(PAYLOAD_LENGTH_LEN)?;
         }
 
-        packet::encode_pkt_num(pn, &mut b)?;
+        packet::encode_pkt_num(pn, pn_len, &mut b)?;
 
         let payload_offset = b.off();
 
@@ -6767,6 +6782,7 @@ impl Connection {
             retrans: self.retrans_count,
             sent_bytes: self.sent_bytes,
             recv_bytes: self.recv_bytes,
+            acked_bytes: self.acked_bytes,
             lost_bytes: self.lost_bytes,
             stream_retrans_bytes: self.stream_retrans_bytes,
             paths_count: self.paths.len(),
@@ -7100,7 +7116,7 @@ impl Connection {
     /// Returns the mutable stream with the given ID if it exists, or creates
     /// a new one otherwise.
     fn get_or_create_stream(
-        &mut self, id: u64, local: bool
+        &mut self, id: u64, local: bool,
     ) -> Result<&mut stream::Stream> {
         self.streams.get_or_create(
             id,
@@ -7149,18 +7165,19 @@ impl Connection {
                         p.recovery.delivery_rate_update_app_limited(true);
                     }
 
-                    let (lost_packets, lost_bytes) = p.recovery.on_ack_received(
-                        &ranges,
-                        ack_delay,
-                        epoch,
-                        handshake_status,
-                        now,
-                        &self.trace_id,
-                        &mut self.newly_acked,
-                    )?;
+                    let (lost_packets, lost_bytes, acked_bytes) =
+                        p.recovery.on_ack_received(
+                            &ranges,
+                            ack_delay,
+                            epoch,
+                            handshake_status,
+                            now,
+                            &self.trace_id,
+                        )?;
 
                     self.lost_count += lost_packets;
                     self.lost_bytes += lost_bytes as u64;
+                    self.acked_bytes += acked_bytes as u64;
 
                     qlog_with_type!(QLOG_PACKET_LOST, self.qlog, q, {
                         for ev_data in p.recovery.packet_loss_qlog() {
@@ -7839,7 +7856,7 @@ impl Connection {
             false,
         );
 
-        path.max_send_bytes = buf_len * MAX_AMPLIFICATION_FACTOR;
+        path.max_send_bytes = buf_len * self.max_amplification_factor;
         path.active_scid_seq = Some(in_scid_seq);
 
         // Automatically probes the new path.
@@ -8156,6 +8173,9 @@ pub struct Stats {
 
     /// The number of received bytes.
     pub recv_bytes: u64,
+
+    /// The number of bytes sent acked.
+    pub acked_bytes: u64,
 
     /// The number of bytes sent lost.
     pub lost_bytes: u64,
@@ -9929,6 +9949,34 @@ mod tests {
         let server_sent = flight.iter().fold(0, |out, p| out + p.0.len());
 
         assert_eq!(server_sent, client_sent * MAX_AMPLIFICATION_FACTOR);
+    }
+
+    #[test]
+    fn custom_limit_handshake_data() {
+        const CUSTOM_AMPLIFICATION_FACTOR: usize = 2;
+
+        let mut config = Config::new(PROTOCOL_VERSION).unwrap();
+        config
+            .load_cert_chain_from_pem_file("examples/cert-big.crt")
+            .unwrap();
+        config
+            .load_priv_key_from_pem_file("examples/cert.key")
+            .unwrap();
+        config
+            .set_application_protos(&[b"proto1", b"proto2"])
+            .unwrap();
+        config.set_max_amplification_factor(CUSTOM_AMPLIFICATION_FACTOR);
+
+        let mut pipe = testing::Pipe::with_server_config(&mut config).unwrap();
+
+        let flight = testing::emit_flight(&mut pipe.client).unwrap();
+        let client_sent = flight.iter().fold(0, |out, p| out + p.0.len());
+        testing::process_flight(&mut pipe.server, flight).unwrap();
+
+        let flight = testing::emit_flight(&mut pipe.server).unwrap();
+        let server_sent = flight.iter().fold(0, |out, p| out + p.0.len());
+
+        assert_eq!(server_sent, client_sent * CUSTOM_AMPLIFICATION_FACTOR);
     }
 
     #[test]
@@ -12271,7 +12319,7 @@ mod tests {
         let epoch = packet::Type::Initial.to_epoch().unwrap();
 
         let pn = 0;
-        let pn_len = packet::pkt_num_len(pn).unwrap();
+        let pn_len = packet::pkt_num_len(pn, 0);
 
         let dcid = pipe.client.destination_id();
         let scid = pipe.client.source_id();
@@ -12296,7 +12344,7 @@ mod tests {
         let len = pn_len + payload_len;
         b.put_varint(len as u64).unwrap();
 
-        packet::encode_pkt_num(pn, &mut b).unwrap();
+        packet::encode_pkt_num(pn, pn_len, &mut b).unwrap();
 
         let payload_offset = b.off();
 
@@ -15419,30 +15467,17 @@ mod tests {
     #[test]
     /// Tests that resetting a stream restores flow control for unsent data.
     fn last_tx_data_larger_than_tx_data() {
-        let mut client_config = Config::new(PROTOCOL_VERSION).unwrap();
-        client_config
+        let mut config = Config::new(PROTOCOL_VERSION).unwrap();
+        config
             .set_application_protos(&[b"proto1", b"proto2"])
             .unwrap();
-        client_config.set_initial_congestion_window_packets(40);
-        client_config.set_initial_max_data(12000);
-        client_config.set_initial_max_stream_data_bidi_local(20000);
-        client_config.set_initial_max_stream_data_bidi_remote(20000);
-        client_config.set_max_recv_udp_payload_size(1200);
-        client_config.verify_peer(false);
+        config.set_initial_max_data(12000);
+        config.set_initial_max_stream_data_bidi_local(20000);
+        config.set_initial_max_stream_data_bidi_remote(20000);
+        config.set_max_recv_udp_payload_size(1200);
+        config.verify_peer(false);
 
-        let mut server_config = Config::new(crate::PROTOCOL_VERSION).unwrap();
-        server_config.load_cert_chain_from_pem_file("examples/cert.crt").unwrap();
-        server_config.load_priv_key_from_pem_file("examples/cert.key").unwrap();
-        server_config.set_application_protos(&[b"proto1", b"proto2"]).unwrap();
-        server_config.set_initial_congestion_window_packets(20);
-        server_config.set_initial_max_data(30);
-        server_config.set_initial_max_stream_data_bidi_local(15);
-        server_config.set_initial_max_stream_data_bidi_remote(15);
-        server_config.set_initial_max_streams_bidi(3);
-        server_config.set_initial_max_streams_uni(3);
-        server_config.set_ack_delay_exponent(8);
-
-        let mut pipe = testing::Pipe::with_client_and_server_config(&mut client_config, &mut server_config).unwrap();
+        let mut pipe = testing::Pipe::with_client_config(&mut config).unwrap();
         assert_eq!(pipe.handshake(), Ok(()));
 
         // Client opens stream 4 and 8.
@@ -15463,7 +15498,7 @@ mod tests {
         // Server buffers some data, until send capacity limit reached.
         let mut buf = [0; 1200];
         assert_eq!(pipe.server.stream_send(4, &buf, false), Ok(1200));
-        assert_eq!(pipe.server.stream_send(8, &buf, false), Ok(800));
+        assert_eq!(pipe.server.stream_send(8, &buf, false), Ok(441));
         assert_eq!(pipe.server.stream_send(4, &buf, false), Err(Error::Done));
 
         // Wait for PTO to expire.
@@ -17566,7 +17601,7 @@ pub use crate::path::PathEvent;
 pub use crate::path::PathStats;
 pub use crate::path::SocketAddrIter;
 
-pub use crate::recovery::CongestionControlAlgorithm;
+pub use crate::recovery::congestion::CongestionControlAlgorithm;
 pub use crate::recovery::CREvent;
 
 pub use crate::stream::StreamIter;

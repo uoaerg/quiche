@@ -67,11 +67,6 @@ impl Resume {
         trace!("{} careful resume configured", self.trace_id);
     }
 
-    pub fn reset(&mut self) {
-        self.cr_state = CrState::default();
-        self.pipesize = 0;
-    }
-
     pub fn enabled(&self) -> bool {
         if self.enabled {
             self.cr_state != CrState::Normal
@@ -480,7 +475,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
     }
     #[test]
     fn valid_rtt_full_reno() {
@@ -527,7 +522,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(50);
 
@@ -542,9 +537,8 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 5))
         );
 
         assert_eq!(r.cwnd(), 12_000);
@@ -583,8 +577,8 @@ mod tests {
 
         assert_eq!(r.cwnd(), 40_000);
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(15));
-        assert_eq!(r.resume.pipesize, 12_000);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Unvalidated(15));
+        assert_eq!(r.congestion.resume.pipesize, 12_000);
     }
 
 
@@ -633,7 +627,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(50);
 
@@ -648,9 +642,8 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 5))
         );
 
         // Send significantly more than the CWND to enter app limited
@@ -687,8 +680,8 @@ mod tests {
 
         assert_eq!(r.cwnd(), 40_000);
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(15));
-        assert_eq!(r.resume.pipesize, 12_000);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Unvalidated(15));
+        assert_eq!(r.congestion.resume.pipesize, 12_000);
     }
     #[test]
     fn invalid_rtt_full() {
@@ -734,7 +727,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(600);
 
@@ -749,9 +742,8 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1200 * 4))
         );
 
         // Send significantly more than the CWND to enter app limited
@@ -785,7 +777,7 @@ mod tests {
             assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
-        assert_eq!(r.resume.cr_state, CrState::Normal);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Normal);
     }
 
     #[test]
@@ -832,7 +824,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(50);
 
@@ -847,9 +839,8 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1200 * 37))
         );
 
         // Send significantly more than the CWND to enter app limited
@@ -882,10 +873,10 @@ mod tests {
             );
             assert_eq!(r.epochs[packet::Epoch::Application].sent_packets.len(), i + 1);
             assert_eq!(r.bytes_in_flight, 1200 * (i + 1));
-            assert_eq!(r.congestion_window, 56_400);
+            assert_eq!(r.congestion.congestion_window, 56_400);
 
         }
-        assert_eq!(r.resume.cr_state, CrState::Normal);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Normal);
     }
 
     #[test]
@@ -934,7 +925,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(50);
 
@@ -951,12 +942,11 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((1, 1000))
+            Ok((1, 1000, 1000 * 8))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Normal);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Normal);
     }
     #[test]
     fn packet_loss_recon_full_cubic() {
@@ -1004,7 +994,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(50);
 
@@ -1021,12 +1011,11 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((1, 1000))
+            Ok((1, 1000, 1000 * 8))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Normal);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Normal);
     }
 
     #[test]
@@ -1047,8 +1036,6 @@ mod tests {
            delivered_time: now,
            first_sent_time: now,
            is_app_limited: false,
-           tx_in_flight: 0,
-           lost: 0,
            rtt: Duration::ZERO,
        };
         r.process_ack(35, &p, 5_000);
@@ -1063,8 +1050,6 @@ mod tests {
             delivered_time: now,
             first_sent_time: now,
             is_app_limited: false,
-            tx_in_flight: 0,
-            lost: 0,
             rtt: Duration::ZERO,
         };
         r.process_ack(35, &p, 5_000);
@@ -1116,7 +1101,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(25);
 
@@ -1131,9 +1116,8 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 4))
         );
 
         // Send significantly more than the CWND to enter app limited
@@ -1168,8 +1152,8 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(14));
-        assert_eq!(r.congestion_window, 60_000);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Unvalidated(14));
+        assert_eq!(r.congestion.congestion_window, 60_000);
 
         now += Duration::from_millis(25);
 
@@ -1184,12 +1168,11 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 10))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(14));
+        assert_eq!(r.congestion.resume.cr_state, CrState::Unvalidated(14));
 
         let mut acked = ranges::RangeSet::default();
         acked.insert(14..16);
@@ -1202,12 +1185,11 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 2))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Validating(43));
+        assert_eq!(r.congestion.resume.cr_state, CrState::Validating(43));
 
         now += Duration::from_millis(25);
 
@@ -1222,12 +1204,11 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 28))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Normal);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Normal);
     }
 
     #[test]
@@ -1274,7 +1255,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(25);
 
@@ -1289,12 +1270,11 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 4))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         // Send significantly more than the CWND to enter app limited
         for i in 0..20 {
@@ -1328,9 +1308,9 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(14));
-        assert_eq!(r.congestion_window, 60_000);
-        let mut expected_pipesize = r.resume.pipesize;
+        assert_eq!(r.congestion.resume.cr_state, CrState::Unvalidated(14));
+        assert_eq!(r.congestion.congestion_window, 60_000);
+        let mut expected_pipesize = r.congestion.resume.pipesize;
 
         now += Duration::from_millis(25);
 
@@ -1346,15 +1326,14 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((1, 1000))
+            Ok((1, 1000, 1000 * 10))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::SafeRetreat(23));
-        assert_eq!(r.congestion_window, 12_000);
+        assert_eq!(r.congestion.resume.cr_state, CrState::SafeRetreat(23));
+        assert_eq!(r.congestion.congestion_window, 12_000);
         expected_pipesize += 10_000;
-        assert_eq!(r.resume.pipesize, expected_pipesize);
+        assert_eq!(r.congestion.resume.pipesize, expected_pipesize);
 
         now += Duration::from_millis(25);
 
@@ -1369,15 +1348,14 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((1, 1000))
+            Ok((1, 1000, 1000 * 8))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Normal);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Normal);
         expected_pipesize += 7_000;
-        assert_eq!(r.resume.pipesize, expected_pipesize);
-        assert_eq!(r.ssthresh, expected_pipesize);
+        assert_eq!(r.congestion.resume.pipesize, expected_pipesize);
+        assert_eq!(r.congestion.ssthresh, expected_pipesize);
     }
 
     #[test]
@@ -1424,7 +1402,7 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         now += Duration::from_millis(25);
 
@@ -1439,12 +1417,11 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 4))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Reconnaissance);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Reconnaissance);
 
         // Send significantly more than the CWND to enter app limited
         for i in 0..40 {
@@ -1478,9 +1455,9 @@ mod tests {
             assert_eq!(r.bytes_in_flight, 1000 * (i + 1));
         }
 
-        assert_eq!(r.resume.cr_state, CrState::Unvalidated(14));
-        assert_eq!(r.congestion_window, 60_000);
-        let mut expected_pipesize = r.resume.pipesize;
+        assert_eq!(r.congestion.resume.cr_state, CrState::Unvalidated(14));
+        assert_eq!(r.congestion.congestion_window, 60_000);
+        let mut expected_pipesize = r.congestion.resume.pipesize;
 
         now += Duration::from_millis(25);
 
@@ -1495,14 +1472,13 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 12))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Validating(43));
+        assert_eq!(r.congestion.resume.cr_state, CrState::Validating(43));
         expected_pipesize += 12_000;
-        assert_eq!(r.resume.pipesize, expected_pipesize);
+        assert_eq!(r.congestion.resume.pipesize, expected_pipesize);
 
         now += Duration::from_millis(25);
 
@@ -1517,14 +1493,13 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((1, 1000))
+            Ok((1, 1000, 1000 * 3))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::SafeRetreat(43));
+        assert_eq!(r.congestion.resume.cr_state, CrState::SafeRetreat(43));
         expected_pipesize += 3_000;
-        assert_eq!(r.resume.pipesize, expected_pipesize);
+        assert_eq!(r.congestion.resume.pipesize, expected_pipesize);
 
         now += Duration::from_millis(25);
 
@@ -1539,14 +1514,13 @@ mod tests {
                 HandshakeStatus::default(),
                 now,
                 "",
-                &mut Vec::new(),
             ),
-            Ok((0, 0))
+            Ok((0, 0, 1000 * 24))
         );
 
-        assert_eq!(r.resume.cr_state, CrState::Normal);
+        assert_eq!(r.congestion.resume.cr_state, CrState::Normal);
         expected_pipesize += 23_000;
-        assert_eq!(r.resume.pipesize, expected_pipesize);
-        assert_eq!(r.ssthresh, expected_pipesize);
+        assert_eq!(r.congestion.resume.pipesize, expected_pipesize);
+        assert_eq!(r.congestion.ssthresh, expected_pipesize);
     }
 }

@@ -24,20 +24,31 @@
 // NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 // SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-use crate::recovery::Recovery;
+use super::*;
 
-// BBR Transmit Packet Pacing Functions
+use std::time::Instant;
+
+// BBR2 Functions when trasmitting packets.
 //
-
-// 4.2.1. Pacing Rate
-pub fn bbr_set_pacing_rate_with_gain(r: &mut Recovery, pacing_gain: f64) {
-    let rate = (pacing_gain * r.bbr_state.btlbw as f64) as u64;
-
-    if r.bbr_state.filled_pipe || rate > r.bbr_state.pacing_rate {
-        r.bbr_state.pacing_rate = rate;
-    }
+// 4.2.2.  Per-Transmit Steps
+pub fn bbr2_on_transmit(
+    r: &mut Congestion, bytes_in_flight: usize, now: Instant,
+) {
+    bbr2_handle_restart_from_idle(r, bytes_in_flight, now);
 }
 
-pub fn bbr_set_pacing_rate(r: &mut Recovery) {
-    bbr_set_pacing_rate_with_gain(r, r.bbr_state.pacing_gain);
+// 4.4.3.  Logic
+fn bbr2_handle_restart_from_idle(
+    r: &mut Congestion, bytes_in_flight: usize, now: Instant,
+) {
+    if bytes_in_flight == 0 && r.delivery_rate.app_limited() {
+        r.bbr2_state.idle_restart = true;
+        r.bbr2_state.extra_acked_interval_start = now;
+
+        if per_ack::bbr2_is_in_a_probe_bw_state(r) {
+            pacing::bbr2_set_pacing_rate_with_gain(r, 1.0);
+        } else if r.bbr2_state.state == BBR2StateMachine::ProbeRTT {
+            per_ack::bbr2_check_probe_rtt_done(r, now);
+        }
+    }
 }
