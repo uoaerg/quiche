@@ -35,6 +35,7 @@ use crate::recovery;
 
 use crate::recovery::rtt::RttStats;
 use crate::recovery::Acked;
+use crate::recovery::congestion::resume::CrState;
 use crate::recovery::Sent;
 
 use super::Congestion;
@@ -95,14 +96,19 @@ fn on_packet_acked(
             r.ssthresh = r.congestion_window;
         }
     } else {
-        // Congestion avoidance.
-        r.bytes_acked_ca += packet.size;
-
-        if r.bytes_acked_ca >= r.congestion_window {
-            r.bytes_acked_ca -= r.congestion_window;
-            r.congestion_window += r.max_datagram_size;
+    if r.resume.enabled() {
+        let cr_state = r.resume.get_state();
+        match cr_state {
+            CrState::Unvalidated(_) => {}
+            CrState::SafeRetreat(_) => {}
+            _ => {
+                r.congestion_window += r.max_datagram_size;
+            }
         }
-    }
+    } else {
+        r.congestion_window += r.max_datagram_size;
+      }
+}
 }
 
 fn congestion_event(

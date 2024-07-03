@@ -74,6 +74,9 @@ impl Resume {
             false
         }
     }
+    pub fn get_state(&self) -> CrState {
+        self.cr_state
+    }
 
     #[inline]
     fn change_state(&mut self, state: CrState, trigger: CarefulResumeTrigger) {
