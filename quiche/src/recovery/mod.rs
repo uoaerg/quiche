@@ -501,11 +501,15 @@ impl Recovery {
             in_flight,
         );
 
+
+        let bytes_acked = self.congestion.resume.total_acked;
+        let iw_acked = bytes_acked >= self.congestion.initial_window;
+
         if self.congestion.resume.enabled() && epoch == packet::Epoch::Application {
             let largest_sent_pkt = self.epochs[epoch].sent_packets.iter().map(|p| p.pkt_num).max().unwrap_or_default();
             // Increase the congestion window by a jump determined by careful resume
             self.congestion.congestion_window += self.congestion.resume.send_packet(
-                self.rtt_stats.smoothed_rtt, self.congestion.congestion_window, largest_sent_pkt, self.congestion.app_limited
+                self.rtt_stats.smoothed_rtt, self.congestion.congestion_window, largest_sent_pkt, self.congestion.app_limited, iw_acked
             );
         }
 
@@ -588,6 +592,7 @@ impl Recovery {
         // Detect and mark lost packets without removing them from the sent
         // packets list.
         let loss = self.detect_lost_packets(epoch, now, trace_id);
+
 
         if self.congestion.resume.enabled() {
             for packet in self.newly_acked.iter() {
