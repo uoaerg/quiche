@@ -537,11 +537,23 @@ fn main() {
             }
         }
 
+
         // Generate outgoing QUIC packets for all active connections and send
         // them on the UDP socket, until quiche reports that there are no more
         // packets to be sent.
         continue_write = false;
         for client in clients.values_mut() {
+             if client.http_conn.is_some() {
+                let conn = &mut client.conn;
+                let http_conn = client.http_conn.as_mut().unwrap();
+                let partial_responses = &mut client.partial_responses;
+
+                // Handle writable streams.
+                for stream_id in conn.writable() {
+                    http_conn.handle_writable(conn, partial_responses, stream_id);
+                }
+              }
+
             // Reduce max_send_burst by 25% if loss is increasing more than 0.1%.
             let loss_rate =
                 client.conn.stats().lost as f64 / client.conn.stats().sent as f64;
